@@ -4,4 +4,12 @@
 //! logic). New tools are added here as they are implemented; the router in
 //! `server.rs` wires them up as `#[tool]` methods.
 
+pub mod click;
+pub mod move_mouse;
+pub mod multi_edit;
+pub mod multi_select;
+pub mod scroll;
+pub mod shortcut;
+mod support;
+pub mod typing;
 pub mod wait;
