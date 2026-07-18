@@ -59,7 +59,6 @@ impl WindowsComputerUseServer {
     }
 
     #[tool(
-<<<<<<< HEAD
         name = "Click",
         description = "Performs mouse clicks at specified coordinates [x, y] or passing a UI element's label/id. Supports button types: 'left' for selection/activation, 'right' for context menus, 'middle'. Supports clicks: 0=hover only (no click), 1=single click (select/focus), 2=double click (open/activate). Provide either loc or label."
     )]
