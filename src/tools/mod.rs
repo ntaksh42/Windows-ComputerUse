@@ -5,10 +5,15 @@
 //! `server.rs` wires them up as `#[tool]` methods.
 
 pub mod click;
+pub mod clipboard;
 pub mod display_inventory;
+pub mod filesystem;
 pub mod move_mouse;
 pub mod multi_edit;
 pub mod multi_select;
+pub mod notification;
+pub mod registry;
+pub mod scrape;
 pub mod screenshot;
 pub mod scroll;
 pub mod shortcut;
