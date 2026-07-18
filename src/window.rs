@@ -1,0 +1,206 @@
+//! Minimal top-level window enumeration and manipulation used by the App
+//! tool's `resize`/`switch` modes (docs/SPEC.md §1).
+//!
+//! This works directly against Win32 top-level windows via `EnumWindows`
+//! rather than the full UIA-based Snapshot/Tree service (not yet
+//! implemented), which is the source of window state in the Python
+//! reference. See the implementer's final report for this scope note.
+
+use std::time::{Duration, Instant};
+
+use windows::Win32::Foundation::{HWND, LPARAM, RECT};
+use windows::core::BOOL;
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::UI::WindowsAndMessaging::{
+    ASFW_ANY, AllowSetForegroundWindow, BringWindowToTop, EnumWindows, GetClassNameW,
+    GetForegroundWindow, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, HWND_TOP, IsIconic, IsWindow, IsWindowVisible, IsZoomed, MoveWindow,
+    SW_RESTORE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetForegroundWindow, SetWindowPos,
+    ShowWindow,
+};
+
+/// A visible, titled top-level window.
+#[derive(Debug, Clone)]
+pub struct WindowInfo {
+    pub handle: isize,
+    pub title: String,
+    pub pid: u32,
+}
+
+/// Classes belonging to shell chrome (desktop, taskbar), excluded from enumeration.
+const EXCLUDED_CLASSES: &[&str] = &["Progman", "Shell_TrayWnd"];
+
+/// Enumerates visible, titled top-level windows, skipping desktop/taskbar shell windows.
+pub fn list_windows() -> Vec<WindowInfo> {
+    let mut windows: Vec<WindowInfo> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(Some(enum_proc), LPARAM(&mut windows as *mut Vec<WindowInfo> as isize));
+    }
+    windows
+}
+
+unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    unsafe {
+        let windows = &mut *(lparam.0 as *mut Vec<WindowInfo>);
+        if !IsWindowVisible(hwnd).as_bool() {
+            return true.into();
+        }
+        if EXCLUDED_CLASSES.contains(&window_class_name(hwnd).as_str()) {
+            return true.into();
+        }
+        let title = window_title(hwnd);
+        if title.is_empty() {
+            return true.into();
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        windows.push(WindowInfo { handle: hwnd.0 as isize, title, pid });
+        true.into()
+    }
+}
+
+fn window_title(hwnd: HWND) -> String {
+    unsafe {
+        let len = GetWindowTextLengthW(hwnd);
+        if len <= 0 {
+            return String::new();
+        }
+        let mut buf = vec![0u16; len as usize + 1];
+        let copied = GetWindowTextW(hwnd, &mut buf).max(0) as usize;
+        String::from_utf16_lossy(&buf[..copied])
+    }
+}
+
+fn window_class_name(hwnd: HWND) -> String {
+    unsafe {
+        let mut buf = vec![0u16; 256];
+        let len = GetClassNameW(hwnd, &mut buf).max(0) as usize;
+        String::from_utf16_lossy(&buf[..len])
+    }
+}
+
+/// Finds the best fuzzy-name match (score_cutoff 70) among currently open windows.
+pub fn find_by_name(name: &str) -> Option<WindowInfo> {
+    let windows = list_windows();
+    let titles: Vec<&str> = windows.iter().map(|w| w.title.as_str()).collect();
+    let (matched_title, _) = crate::fuzzy::extract_one(name, titles, 70.0)?;
+    let matched_title = matched_title.to_string();
+    windows.into_iter().find(|w| w.title == matched_title)
+}
+
+/// Returns the current foreground (active) top-level window, if any.
+/// Used by `App` `resize` mode when no `name` is given.
+pub fn foreground_window() -> Option<WindowInfo> {
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if !IsWindow(Some(hwnd)).as_bool() {
+            return None;
+        }
+        let title = window_title(hwnd);
+        if title.is_empty() {
+            return None;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        Some(WindowInfo { handle: hwnd.0 as isize, title, pid })
+    }
+}
+
+pub fn is_minimized(handle: isize) -> bool {
+    unsafe { IsIconic(HWND(handle as *mut _)).as_bool() }
+}
+
+pub fn is_maximized(handle: isize) -> bool {
+    unsafe { IsZoomed(HWND(handle as *mut _)).as_bool() }
+}
+
+fn window_rect(handle: isize) -> Option<(i32, i32, i32, i32)> {
+    let hwnd = HWND(handle as *mut _);
+    let mut rect = RECT::default();
+    unsafe {
+        GetWindowRect(hwnd, &mut rect).ok()?;
+    }
+    Some((rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top))
+}
+
+/// Resizes/moves a window, defaulting unset `loc`/`size` to its current bounds.
+/// Returns the applied `(x, y, width, height)`.
+pub fn resize_window(handle: isize, loc: Option<(i32, i32)>, size: Option<(i32, i32)>) -> Result<(i32, i32, i32, i32), String> {
+    let (cur_x, cur_y, cur_w, cur_h) = window_rect(handle).ok_or("Failed to read window bounds.")?;
+    let (x, y) = loc.unwrap_or((cur_x, cur_y));
+    let (w, h) = size.unwrap_or((cur_w, cur_h));
+    unsafe {
+        MoveWindow(HWND(handle as *mut _), x, y, w, h, true).map_err(|e| e.to_string())?;
+    }
+    Ok((x, y, w, h))
+}
+
+/// Brings `handle` to the foreground, matching the Python reference's
+/// `bring_window_to_top` (AttachThreadInput dance for cross-thread focus transfer).
+pub fn switch_to(handle: isize) {
+    let hwnd = HWND(handle as *mut _);
+    unsafe {
+        if !IsWindow(Some(hwnd)).as_bool() {
+            return;
+        }
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        }
+
+        let foreground = GetForegroundWindow();
+        if !IsWindow(Some(foreground)).as_bool() {
+            let _ = SetForegroundWindow(hwnd);
+            let _ = BringWindowToTop(hwnd);
+            return;
+        }
+
+        let mut fg_pid = 0u32;
+        let foreground_thread = GetWindowThreadProcessId(foreground, Some(&mut fg_pid));
+        let mut tgt_pid = 0u32;
+        let target_thread = GetWindowThreadProcessId(hwnd, Some(&mut tgt_pid));
+        let current_tid = GetCurrentThreadId();
+
+        if foreground_thread == 0 || target_thread == 0 || foreground_thread == target_thread {
+            let _ = SetForegroundWindow(hwnd);
+            let _ = BringWindowToTop(hwnd);
+            return;
+        }
+
+        let _ = AllowSetForegroundWindow(ASFW_ANY);
+
+        let mut attached = Vec::new();
+        for thread in [foreground_thread, target_thread] {
+            if thread != current_tid && AttachThreadInput(current_tid, thread, true).as_bool() {
+                attached.push(thread);
+            }
+        }
+
+        let _ = SetForegroundWindow(hwnd);
+        let _ = BringWindowToTop(hwnd);
+        let _ = SetWindowPos(hwnd, Some(HWND_TOP), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+
+        for thread in attached.into_iter().rev() {
+            let _ = AttachThreadInput(current_tid, thread, false);
+        }
+    }
+}
+
+/// Waits up to `timeout` for a window belonging to `pid` (if given) or whose
+/// title contains `name` (case-insensitive) to appear.
+pub fn wait_for_window(pid: Option<u32>, name: &str, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    let name_lower = name.to_lowercase();
+    loop {
+        let windows = list_windows();
+        if pid.is_some_and(|pid| windows.iter().any(|w| w.pid == pid)) {
+            return true;
+        }
+        if windows.iter().any(|w| w.title.to_lowercase().contains(&name_lower)) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
