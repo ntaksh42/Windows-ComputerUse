@@ -1,6 +1,8 @@
 use anyhow::Result;
 use rmcp::{ServiceExt, transport::stdio};
 
+mod capture;
+mod display;
 mod input_sim;
 mod keys;
 mod params;

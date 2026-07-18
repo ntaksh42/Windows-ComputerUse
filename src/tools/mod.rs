@@ -5,9 +5,11 @@
 //! `server.rs` wires them up as `#[tool]` methods.
 
 pub mod click;
+pub mod display_inventory;
 pub mod move_mouse;
 pub mod multi_edit;
 pub mod multi_select;
+pub mod screenshot;
 pub mod scroll;
 pub mod shortcut;
 mod support;
