@@ -4,4 +4,9 @@
 //! logic). New tools are added here as they are implemented; the router in
 //! `server.rs` wires them up as `#[tool]` methods.
 
+pub mod clipboard;
+pub mod filesystem;
+pub mod notification;
+pub mod registry;
+pub mod scrape;
 pub mod wait;
