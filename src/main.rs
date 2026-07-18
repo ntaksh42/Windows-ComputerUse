@@ -1,6 +1,8 @@
 use anyhow::Result;
 use rmcp::{ServiceExt, transport::stdio};
 
+mod capture;
+mod display;
 mod params;
 mod server;
 mod tools;

@@ -4,4 +4,6 @@
 //! logic). New tools are added here as they are implemented; the router in
 //! `server.rs` wires them up as `#[tool]` methods.
 
+pub mod display_inventory;
+pub mod screenshot;
 pub mod wait;
