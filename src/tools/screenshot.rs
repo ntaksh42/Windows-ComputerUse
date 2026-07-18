@@ -65,7 +65,7 @@ fn resolve_scale_from(raw: Option<&str>) -> f64 {
     scale.clamp(0.1, 1.0)
 }
 
-fn profiling_enabled() -> bool {
+pub(crate) fn profiling_enabled() -> bool {
     matches!(
         env::var("WINDOWS_MCP_PROFILE_SNAPSHOT")
             .unwrap_or_default()
@@ -116,7 +116,7 @@ pub fn coordinate_scale_text(coord_scale: f64) -> String {
 
 /// Overlays a light grid (`w_count` vertical, `h_count` horizontal
 /// divisions) onto `image` for spatial reference.
-fn draw_grid_lines(image: &mut image::RgbaImage, w_count: i64, h_count: i64) {
+pub(crate) fn draw_grid_lines(image: &mut image::RgbaImage, w_count: i64, h_count: i64) {
     if w_count <= 0 || h_count <= 0 {
         return;
     }
@@ -141,7 +141,7 @@ fn draw_grid_lines(image: &mut image::RgbaImage, w_count: i64, h_count: i64) {
     }
 }
 
-fn cursor_position() -> (i32, i32) {
+pub(crate) fn cursor_position() -> (i32, i32) {
     let mut point = POINT::default();
     let ok = unsafe { GetCursorPos(&mut point) };
     if ok.is_ok() {
@@ -151,7 +151,7 @@ fn cursor_position() -> (i32, i32) {
     }
 }
 
-fn display_list_text(displays: &[display::Display]) -> String {
+pub(crate) fn display_list_text(displays: &[display::Display]) -> String {
     displays
         .iter()
         .map(|d| {

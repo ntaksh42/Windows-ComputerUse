@@ -1,21 +1,21 @@
-//! Global desktop state, populated by the Snapshot tool (a later phase) and
-//! consumed here so Click/Type/Scroll/Move/MultiSelect/MultiEdit can resolve
-//! a UI element `label` to screen coordinates without re-querying the
-//! accessibility tree.
-#![allow(dead_code)] // TODO: drop once the Snapshot tool writes real state.
+//! Global desktop state, populated by the Snapshot tool and consumed here so
+//! Click/Type/Scroll/Move/MultiSelect/MultiEdit can resolve a UI element
+//! `label` to screen coordinates without re-querying the accessibility tree.
 
 use std::sync::{Mutex, OnceLock};
 
 /// A single UI element discovered by Snapshot's accessibility-tree walk.
-///
-/// Kept intentionally minimal — the Snapshot implementation is expected to
-/// grow this with additional fields (bounding box, metadata, window name,
-/// etc.) as it lands.
 #[derive(Debug, Clone)]
 pub struct ElementNode {
     pub name: String,
     pub control_type: String,
     pub center: (i32, i32),
+    /// Screen-coordinate bounding box `(left, top, right, bottom)`, used to
+    /// draw the annotated-screenshot bounding box.
+    pub bounding_box: (i32, i32, i32, i32),
+    /// Whether this element held keyboard focus at capture time (used by
+    /// WaitFor's `focused_element` condition).
+    pub has_focus: bool,
 }
 
 /// Flat lists of interactive/scrollable elements from the most recent
@@ -39,6 +39,7 @@ pub fn set_state(state: DesktopState) {
 }
 
 /// Clears the desktop state.
+#[allow(dead_code)] // symmetry with set_state; no production caller yet
 pub fn clear_state() {
     *state_lock().lock().unwrap() = None;
 }
@@ -101,6 +102,8 @@ mod tests {
             name: "n".into(),
             control_type: "Button".into(),
             center: (x, y),
+            bounding_box: (x, y, x, y),
+            has_focus: false,
         }
     }
 

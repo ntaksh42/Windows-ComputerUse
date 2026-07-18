@@ -11,13 +11,13 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::WindowsAndMessaging::{
-    ASFW_ANY, AllowSetForegroundWindow, BringWindowToTop, EnumWindows, GetClassNameW,
+    ASFW_ANY, AllowSetForegroundWindow, BringWindowToTop, EnumWindows, FindWindowW, GetClassNameW,
     GetForegroundWindow, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
     GetWindowThreadProcessId, HWND_TOP, IsIconic, IsWindow, IsWindowVisible, IsZoomed, MoveWindow,
     SW_RESTORE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetForegroundWindow, SetWindowPos,
     ShowWindow,
 };
-use windows::core::BOOL;
+use windows::core::{BOOL, PCWSTR};
 
 /// A visible, titled top-level window.
 #[derive(Debug, Clone)]
@@ -84,6 +84,70 @@ fn window_class_name(hwnd: HWND) -> String {
         let len = GetClassNameW(hwnd, &mut buf).max(0) as usize;
         String::from_utf16_lossy(&buf[..len])
     }
+}
+
+/// A window candidate for Snapshot's accessibility-tree walk. Broader than
+/// [`list_windows`] (used by the App tool): includes empty-titled windows
+/// plus the taskbar (`Shell_TrayWnd`) and desktop (`Progman`), since Snapshot
+/// needs to walk their UI trees too (docs/SPEC.md §6 item 3).
+#[derive(Debug, Clone)]
+pub struct SnapshotWindow {
+    pub handle: isize,
+    pub title: String,
+    pub class_name: String,
+}
+
+unsafe extern "system" fn enum_snapshot_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    unsafe {
+        let windows = &mut *(lparam.0 as *mut Vec<SnapshotWindow>);
+        if !IsWindowVisible(hwnd).as_bool() {
+            return true.into();
+        }
+        windows.push(SnapshotWindow {
+            handle: hwnd.0 as isize,
+            title: window_title(hwnd),
+            class_name: window_class_name(hwnd),
+        });
+        true.into()
+    }
+}
+
+fn find_window_by_class(class_name: &str) -> Option<HWND> {
+    let mut wide: Vec<u16> = class_name.encode_utf16().collect();
+    wide.push(0);
+    unsafe {
+        let hwnd = FindWindowW(PCWSTR(wide.as_ptr()), PCWSTR::null()).ok()?;
+        if hwnd.is_invalid() { None } else { Some(hwnd) }
+    }
+}
+
+/// Enumerates visible top-level windows (including empty-titled ones), plus
+/// the taskbar and desktop shell windows, for the Snapshot tool's UIA walk.
+pub fn list_snapshot_windows() -> Vec<SnapshotWindow> {
+    let mut windows: Vec<SnapshotWindow> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(
+            Some(enum_snapshot_proc),
+            LPARAM(&mut windows as *mut Vec<SnapshotWindow> as isize),
+        );
+    }
+    for class_name in ["Shell_TrayWnd", "Shell_SecondaryTrayWnd", "Progman"] {
+        if let Some(hwnd) = find_window_by_class(class_name)
+            && !windows.iter().any(|w| w.handle == hwnd.0 as isize)
+        {
+            windows.push(SnapshotWindow {
+                handle: hwnd.0 as isize,
+                title: window_title(hwnd),
+                class_name: class_name.to_string(),
+            });
+        }
+    }
+    windows
+}
+
+/// Reads a window's current screen bounds as `(x, y, width, height)`.
+pub fn get_window_rect(handle: isize) -> Option<(i32, i32, i32, i32)> {
+    window_rect(handle)
 }
 
 /// Finds the best fuzzy-name match (score_cutoff 70) among currently open windows.

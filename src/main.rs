@@ -12,6 +12,7 @@ mod powershell;
 mod server;
 mod state;
 mod tools;
+mod uia;
 mod win;
 mod window;
 

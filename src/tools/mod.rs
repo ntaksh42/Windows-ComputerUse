@@ -20,6 +20,8 @@ pub mod screenshot;
 pub mod scroll;
 pub mod shell;
 pub mod shortcut;
+pub mod snapshot;
 mod support;
 pub mod typing;
 pub mod wait;
+pub mod wait_for;

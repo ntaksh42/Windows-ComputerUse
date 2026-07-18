@@ -25,8 +25,10 @@ use crate::tools::screenshot::{self, ScreenshotParams};
 use crate::tools::scroll::{self, ScrollParams};
 use crate::tools::shell::{self, PowerShellParams};
 use crate::tools::shortcut::{self, ShortcutParams};
+use crate::tools::snapshot::{self, SnapshotParams};
 use crate::tools::typing::{self, TypeParams};
 use crate::tools::wait::{self, WaitParams};
+use crate::tools::wait_for::{self, WaitForParams};
 
 /// Wraps a tool's `Result<String, String>` into an MCP `CallToolResult`:
 /// `Ok` becomes success content, `Err` becomes an `isError` result (an
@@ -56,6 +58,20 @@ impl WindowsComputerUseServer {
             Ok(message) => Ok(CallToolResult::success(vec![ContentBlock::text(message)])),
             Err(message) => Ok(CallToolResult::error(vec![ContentBlock::text(message)])),
         }
+    }
+
+    #[tool(
+        name = "WaitFor",
+        description = "Polls the desktop (no screenshot) until a condition is met or timeout elapses. condition: text_exists/active_window/element_exists/element_enabled/focused_element (aliases: text/window/element/enabled/focused). text/window_name provide the target to match (casefold substring). timeout (default 10s, max 120s) and interval (default 0.25s, max 5s) control polling. Returns an error on timeout."
+    )]
+    async fn wait_for_tool(
+        &self,
+        Parameters(params): Parameters<WaitForParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = tokio::task::spawn_blocking(move || wait_for::wait_for(params))
+            .await
+            .unwrap_or_else(|e| Err(format!("WaitFor tool panicked: {e}")));
+        as_call_result(result)
     }
 
     #[tool(
@@ -164,6 +180,29 @@ impl WindowsComputerUseServer {
             Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "Error capturing screenshot: {e}. Please try again."
             ))])),
+        }
+    }
+
+    #[tool(
+        name = "Snapshot",
+        description = "Captures a desktop snapshot with cursor position, display/window summaries, and (by default) the UI accessibility tree — interactive element ids/labels, scrollable regions. Use use_vision=true to also include a screenshot image; use_annotation (default true) draws numbered bounding boxes on that image for the interactive elements. Prefer Screenshot when you only need a fast visual check; use Snapshot when you need element labels for Click/Type/Scroll/Move, or scrollable-region detection. Note: when the image is downscaled, multiply image coordinates by the reported scale to get real screen coordinates."
+    )]
+    async fn snapshot(
+        &self,
+        Parameters(params): Parameters<SnapshotParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = tokio::task::spawn_blocking(move || snapshot::snapshot(&params))
+            .await
+            .unwrap_or_else(|e| Err(format!("Snapshot tool panicked: {e}")));
+        match result {
+            Ok(output) => {
+                let mut content = vec![ContentBlock::text(output.text)];
+                if let Some(png_bytes) = output.png_bytes {
+                    content.push(ContentBlock::image(BASE64.encode(png_bytes), "image/png"));
+                }
+                Ok(CallToolResult::success(content))
+            }
+            Err(message) => Ok(CallToolResult::error(vec![ContentBlock::text(message)])),
         }
     }
 
