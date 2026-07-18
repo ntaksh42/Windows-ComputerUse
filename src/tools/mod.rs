@@ -4,6 +4,7 @@
 //! logic). New tools are added here as they are implemented; the router in
 //! `server.rs` wires them up as `#[tool]` methods.
 
+pub mod app;
 pub mod click;
 pub mod clipboard;
 pub mod display_inventory;
@@ -12,10 +13,12 @@ pub mod move_mouse;
 pub mod multi_edit;
 pub mod multi_select;
 pub mod notification;
+pub mod process;
 pub mod registry;
 pub mod scrape;
 pub mod screenshot;
 pub mod scroll;
+pub mod shell;
 pub mod shortcut;
 mod support;
 pub mod typing;

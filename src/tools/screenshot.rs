@@ -59,13 +59,19 @@ pub fn resolve_scale() -> f64 {
 }
 
 fn resolve_scale_from(raw: Option<&str>) -> f64 {
-    let scale = raw.and_then(|s| s.trim().parse::<f64>().ok()).unwrap_or(1.0);
+    let scale = raw
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .unwrap_or(1.0);
     scale.clamp(0.1, 1.0)
 }
 
 fn profiling_enabled() -> bool {
     matches!(
-        env::var("WINDOWS_MCP_PROFILE_SNAPSHOT").unwrap_or_default().trim().to_ascii_lowercase().as_str(),
+        env::var("WINDOWS_MCP_PROFILE_SNAPSHOT")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
         "1" | "true" | "yes" | "on"
     )
 }
@@ -73,17 +79,26 @@ fn profiling_enabled() -> bool {
 /// Combines the user-requested scale with the 1920x1080 cap into a single
 /// downscale factor (never > 1.0, since neither input can exceed 1.0).
 pub fn combined_scale(orig_width: u32, orig_height: u32, user_scale: f64) -> f64 {
-    let scale_width =
-        if orig_width > MAX_IMAGE_WIDTH { MAX_IMAGE_WIDTH as f64 / orig_width as f64 } else { 1.0 };
-    let scale_height =
-        if orig_height > MAX_IMAGE_HEIGHT { MAX_IMAGE_HEIGHT as f64 / orig_height as f64 } else { 1.0 };
+    let scale_width = if orig_width > MAX_IMAGE_WIDTH {
+        MAX_IMAGE_WIDTH as f64 / orig_width as f64
+    } else {
+        1.0
+    };
+    let scale_height = if orig_height > MAX_IMAGE_HEIGHT {
+        MAX_IMAGE_HEIGHT as f64 / orig_height as f64
+    } else {
+        1.0
+    };
     user_scale.min(scale_width).min(scale_height)
 }
 
 /// Applies `scale` to `(orig_width, orig_height)`, truncating towards zero
 /// (matching Python's `int(width * scale)`).
 pub fn scaled_size(orig_width: u32, orig_height: u32, scale: f64) -> (u32, u32) {
-    (((orig_width as f64) * scale) as u32, ((orig_height as f64) * scale) as u32)
+    (
+        ((orig_width as f64) * scale) as u32,
+        ((orig_height as f64) * scale) as u32,
+    )
 }
 
 /// Builds the "Screenshot Coordinate Scale" explanatory line shown when a
@@ -129,7 +144,11 @@ fn draw_grid_lines(image: &mut image::RgbaImage, w_count: i64, h_count: i64) {
 fn cursor_position() -> (i32, i32) {
     let mut point = POINT::default();
     let ok = unsafe { GetCursorPos(&mut point) };
-    if ok.is_ok() { (point.x, point.y) } else { (0, 0) }
+    if ok.is_ok() {
+        (point.x, point.y)
+    } else {
+        (0, 0)
+    }
 }
 
 fn display_list_text(displays: &[display::Display]) -> String {
@@ -139,7 +158,13 @@ fn display_list_text(displays: &[display::Display]) -> String {
             let primary = if d.primary { " primary" } else { "" };
             format!(
                 "{}:{} ({},{},{},{}){}",
-                d.index, d.device, d.bounds.left, d.bounds.top, d.bounds.right, d.bounds.bottom, primary
+                d.index,
+                d.device,
+                d.bounds.left,
+                d.bounds.top,
+                d.bounds.right,
+                d.bounds.bottom,
+                primary
             )
         })
         .collect::<Vec<_>>()
@@ -173,8 +198,15 @@ pub fn screenshot(params: &ScreenshotParams) -> Result<ScreenshotOutput, String>
         None => (capture::virtual_screen_rect(), None),
         Some(indices) => {
             let rect = display::get_display_union_rect(indices)?;
-            let csv = indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
-            let region = format!("({},{},{},{})", rect.left, rect.top, rect.right, rect.bottom);
+            let csv = indices
+                .iter()
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let region = format!(
+                "({},{},{},{})",
+                rect.left, rect.top, rect.right, rect.bottom
+            );
             (rect, Some((csv, region)))
         }
     };
@@ -204,7 +236,12 @@ pub fn screenshot(params: &ScreenshotParams) -> Result<ScreenshotOutput, String>
     let encode_start = Instant::now();
     let mut png_bytes = Vec::new();
     image::codecs::png::PngEncoder::new(&mut png_bytes)
-        .write_image(image.as_raw(), image.width(), image.height(), image::ExtendedColorType::Rgba8)
+        .write_image(
+            image.as_raw(),
+            image.width(),
+            image.height(),
+            image::ExtendedColorType::Rgba8,
+        )
         .map_err(|e| format!("PNG encoding failed: {e}"))?;
     let encode_ms = encode_start.elapsed().as_secs_f64() * 1000.0;
 

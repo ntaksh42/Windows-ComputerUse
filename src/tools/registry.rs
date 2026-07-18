@@ -22,7 +22,9 @@ pub struct RegistryParams {
     pub value: Option<String>,
     /// Registry value type for set mode.
     #[serde(default = "default_reg_type", rename = "type")]
-    #[schemars(description = "Value type for set mode: String, ExpandString, Binary, DWord, MultiString, QWord.")]
+    #[schemars(
+        description = "Value type for set mode: String, ExpandString, Binary, DWord, MultiString, QWord."
+    )]
     pub value_type: RegistryValueType,
 }
 
@@ -85,7 +87,9 @@ pub fn registry(params: RegistryParams) -> String {
 /// Splits a PowerShell-style registry path (`HKCU:\Software\MyApp`) into its
 /// root hive and subkey path (`Software\MyApp`).
 fn parse_registry_path(path: &str) -> Result<(&'static Key, String), String> {
-    let (root_str, rest) = path.split_once(':').ok_or_else(|| format!("Invalid registry path: {path}"))?;
+    let (root_str, rest) = path
+        .split_once(':')
+        .ok_or_else(|| format!("Invalid registry path: {path}"))?;
     let root: &'static Key = match root_str.to_ascii_uppercase().as_str() {
         "HKCU" | "HKEY_CURRENT_USER" => windows_registry::CURRENT_USER,
         "HKLM" | "HKEY_LOCAL_MACHINE" => windows_registry::LOCAL_MACHINE,
@@ -111,16 +115,29 @@ fn get_value(path: &str, name: &str) -> String {
         Ok(v) => v,
         Err(e) => return format!("Error reading registry: {e}"),
     };
-    format!("Registry value [{path}] \"{name}\" = {}", format_value(value))
+    format!(
+        "Registry value [{path}] \"{name}\" = {}",
+        format_value(value)
+    )
 }
 
 fn format_value(value: Value) -> String {
     match value.ty() {
-        Type::U32 => u32::try_from(value).map(|n| n.to_string()).unwrap_or_default(),
-        Type::U64 => u64::try_from(value).map(|n| n.to_string()).unwrap_or_default(),
+        Type::U32 => u32::try_from(value)
+            .map(|n| n.to_string())
+            .unwrap_or_default(),
+        Type::U64 => u64::try_from(value)
+            .map(|n| n.to_string())
+            .unwrap_or_default(),
         Type::String | Type::ExpandString => String::try_from(value).unwrap_or_default(),
-        Type::MultiString => Vec::<String>::try_from(value).unwrap_or_default().join("\n"),
-        Type::Bytes => value.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(" "),
+        Type::MultiString => Vec::<String>::try_from(value)
+            .unwrap_or_default()
+            .join("\n"),
+        Type::Bytes => value
+            .iter()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(" "),
         Type::Other(_) => format!("{:?}", &*value),
     }
 }
@@ -157,7 +174,9 @@ fn set_value(path: &str, name: &str, value: &str, reg_type: RegistryValueType) -
     };
 
     match result {
-        Ok(()) => format!("Registry value [{path}] \"{name}\" set to \"{value}\" (type: {reg_type})."),
+        Ok(()) => {
+            format!("Registry value [{path}] \"{name}\" set to \"{value}\" (type: {reg_type}).")
+        }
         Err(e) => format!("Error writing registry: {e}"),
     }
 }
@@ -170,7 +189,10 @@ fn parse_bytes(value: &str) -> Result<Vec<u8>, String> {
         .filter(|t| !t.is_empty())
         .map(|token| {
             let token = token.trim();
-            let parsed = if let Some(hex) = token.strip_prefix("0x").or_else(|| token.strip_prefix("0X")) {
+            let parsed = if let Some(hex) = token
+                .strip_prefix("0x")
+                .or_else(|| token.strip_prefix("0X"))
+            {
                 u8::from_str_radix(hex, 16)
             } else {
                 token.parse::<u8>()
@@ -239,11 +261,17 @@ fn list_key(path: &str) -> String {
 
     let mut sections = Vec::new();
     if !values.is_empty() {
-        let lines: Vec<String> = values.into_iter().map(|(name, value)| format!("  {name} = {}", format_value(value))).collect();
+        let lines: Vec<String> = values
+            .into_iter()
+            .map(|(name, value)| format!("  {name} = {}", format_value(value)))
+            .collect();
         sections.push(format!("Values:\n{}", lines.join("\n")));
     }
     if !subkeys.is_empty() {
-        let lines: Vec<String> = subkeys.into_iter().map(|name| format!("  {name}")).collect();
+        let lines: Vec<String> = subkeys
+            .into_iter()
+            .map(|name| format!("  {name}"))
+            .collect();
         sections.push(format!("Sub-Keys:\n{}", lines.join("\n")));
     }
 

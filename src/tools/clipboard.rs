@@ -55,7 +55,11 @@ fn set(text: Option<String>) -> String {
     match clipboard.set_text(text.clone()) {
         Ok(()) => {
             let preview: String = text.chars().take(100).collect();
-            let ellipsis = if text.chars().count() > 100 { "..." } else { "" };
+            let ellipsis = if text.chars().count() > 100 {
+                "..."
+            } else {
+                ""
+            };
             format!("Clipboard set to: {preview}{ellipsis}")
         }
         Err(e) => format!("Error: Failed to write clipboard: {e}"),

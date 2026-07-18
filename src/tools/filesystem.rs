@@ -39,7 +39,9 @@ pub struct FileSystemParams {
     pub pattern: Option<String>,
     /// Recurse into subdirectories (list/search) or delete non-empty directories.
     #[serde(default)]
-    #[schemars(description = "Recurse into subdirectories, or allow deleting non-empty directories.")]
+    #[schemars(
+        description = "Recurse into subdirectories, or allow deleting non-empty directories."
+    )]
     pub recursive: Option<BoolOrString>,
     /// Append to the file instead of overwriting it (write mode).
     #[serde(default)]
@@ -113,7 +115,10 @@ pub fn file_system(params: FileSystemParams) -> String {
 
     let base = desktop_dir();
     let path = resolve_path(&params.path, &base);
-    let destination = params.destination.as_deref().map(|d| resolve_path(d, &base));
+    let destination = params
+        .destination
+        .as_deref()
+        .map(|d| resolve_path(d, &base));
 
     match params.mode {
         FileSystemMode::Read => read_file(&path, params.offset, params.limit),
@@ -130,7 +135,9 @@ pub fn file_system(params: FileSystemParams) -> String {
             Some(dst) => move_path(&path, &dst, overwrite),
         },
         FileSystemMode::Delete => delete_path(&path, recursive),
-        FileSystemMode::List => list_directory(&path, params.pattern.as_deref(), recursive, show_hidden),
+        FileSystemMode::List => {
+            list_directory(&path, params.pattern.as_deref(), recursive, show_hidden)
+        }
         FileSystemMode::Search => match params.pattern {
             None => "Error: pattern parameter is required for search mode.".to_string(),
             Some(pattern) => search_files(&path, &pattern, recursive),
@@ -148,7 +155,11 @@ fn desktop_dir() -> PathBuf {
 /// Resolves `path` against `base` if it is not already absolute.
 fn resolve_path(path: &str, base: &Path) -> PathBuf {
     let p = Path::new(path);
-    if p.is_absolute() { p.to_path_buf() } else { base.join(p) }
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        base.join(p)
+    }
 }
 
 /// Appends a Windows-elevation hint when the current process is not elevated.
@@ -232,7 +243,11 @@ fn split_keep_newlines(text: &str) -> Vec<&str> {
 
 fn read_error(e: &io::Error, path: &Path) -> String {
     if e.kind() == io::ErrorKind::PermissionDenied {
-        format!("Error: Permission denied: {}{}", path.display(), permission_hint())
+        format!(
+            "Error: Permission denied: {}{}",
+            path.display(),
+            permission_hint()
+        )
     } else {
         format!("Error reading file: {e}")
     }
@@ -269,7 +284,11 @@ fn write_file(path: &Path, content: &str, append: bool) -> String {
 
 fn write_error(e: &io::Error, path: &Path) -> String {
     if e.kind() == io::ErrorKind::PermissionDenied {
-        format!("Error: Permission denied: {}{}", path.display(), permission_hint())
+        format!(
+            "Error: Permission denied: {}{}",
+            path.display(),
+            permission_hint()
+        )
     } else {
         format!("Error writing file: {e}")
     }
@@ -352,7 +371,11 @@ fn move_path(src: &Path, dst: &Path, overwrite: bool) -> String {
         return move_error(&e);
     }
     if dst.exists() && overwrite {
-        let remove_result = if dst.is_dir() { fs::remove_dir_all(dst) } else { fs::remove_file(dst) };
+        let remove_result = if dst.is_dir() {
+            fs::remove_dir_all(dst)
+        } else {
+            fs::remove_file(dst)
+        };
         if let Err(e) = remove_result {
             return move_error(&e);
         }
@@ -364,7 +387,9 @@ fn move_path(src: &Path, dst: &Path, overwrite: bool) -> String {
         if src.is_dir() {
             copy_dir_recursive(src, dst).and_then(|()| fs::remove_dir_all(src))
         } else {
-            fs::copy(src, dst).map(|_| ()).and_then(|()| fs::remove_file(src))
+            fs::copy(src, dst)
+                .map(|_| ())
+                .and_then(|()| fs::remove_file(src))
         }
     });
 
@@ -427,7 +452,11 @@ fn delete_path(path: &Path, recursive: bool) -> String {
 
 fn delete_error(e: &io::Error, path: &Path) -> String {
     if e.kind() == io::ErrorKind::PermissionDenied {
-        format!("Error: Permission denied: {}{}", path.display(), permission_hint())
+        format!(
+            "Error: Permission denied: {}{}",
+            path.display(),
+            permission_hint()
+        )
     } else {
         format!("Error deleting: {e}")
     }
@@ -442,17 +471,29 @@ struct Entry {
 impl Entry {
     fn to_line(&self) -> String {
         let entry_type = if self.is_dir { "DIR " } else { "FILE" };
-        let size_str = if self.is_dir { String::new() } else { format_size(self.size) };
+        let size_str = if self.is_dir {
+            String::new()
+        } else {
+            format_size(self.size)
+        };
         format!("  [{entry_type}] {}  {size_str}", self.relative)
     }
 }
 
 /// Lowercased file name used as a sort key (dirs-first, case-insensitive).
 fn sort_key(p: &Path) -> String {
-    p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_ascii_lowercase()
+    p.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
 }
 
-fn list_directory(path: &Path, pattern: Option<&str>, recursive: bool, show_hidden: bool) -> String {
+fn list_directory(
+    path: &Path,
+    pattern: Option<&str>,
+    recursive: bool,
+    show_hidden: bool,
+) -> String {
     if !path.exists() {
         return format!("Error: Directory not found: {}", path.display());
     }
@@ -465,7 +506,10 @@ fn list_directory(path: &Path, pattern: Option<&str>, recursive: bool, show_hidd
         Err(e) => return list_error(&e, path),
     };
     raw.retain(|(entry_path, _)| {
-        let name = entry_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let name = entry_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
         if !show_hidden && name.starts_with('.') {
             return false;
         }
@@ -474,23 +518,48 @@ fn list_directory(path: &Path, pattern: Option<&str>, recursive: bool, show_hidd
             None => true,
         }
     });
-    raw.sort_by(|(a, a_is_dir), (b, b_is_dir)| (!a_is_dir).cmp(&!b_is_dir).then_with(|| sort_key(a).cmp(&sort_key(b))));
+    raw.sort_by(|(a, a_is_dir), (b, b_is_dir)| {
+        (!a_is_dir)
+            .cmp(&!b_is_dir)
+            .then_with(|| sort_key(a).cmp(&sort_key(b)))
+    });
 
     if raw.is_empty() {
-        let filter_msg = pattern.map(|p| format!(" matching \"{p}\"")).unwrap_or_default();
+        let filter_msg = pattern
+            .map(|p| format!(" matching \"{p}\""))
+            .unwrap_or_default();
         return format!("Directory {} is empty{filter_msg}.", path.display());
     }
 
     let mut lines = Vec::new();
     let total = raw.len();
     for (entry_path, is_dir) in raw.iter().take(MAX_RESULTS) {
-        let size = if *is_dir { 0 } else { fs::metadata(entry_path).map(|m| m.len()).unwrap_or(0) };
-        let relative = if recursive {
-            entry_path.strip_prefix(path).unwrap_or(entry_path).display().to_string()
+        let size = if *is_dir {
+            0
         } else {
-            entry_path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string()
+            fs::metadata(entry_path).map(|m| m.len()).unwrap_or(0)
         };
-        lines.push(Entry { is_dir: *is_dir, size, relative }.to_line());
+        let relative = if recursive {
+            entry_path
+                .strip_prefix(path)
+                .unwrap_or(entry_path)
+                .display()
+                .to_string()
+        } else {
+            entry_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        lines.push(
+            Entry {
+                is_dir: *is_dir,
+                size,
+                relative,
+            }
+            .to_line(),
+        );
     }
     if total > MAX_RESULTS {
         lines.push(format!("... (truncated, {MAX_RESULTS}+ items)"));
@@ -505,7 +574,11 @@ fn list_directory(path: &Path, pattern: Option<&str>, recursive: bool, show_hidd
 
 fn list_error(e: &io::Error, path: &Path) -> String {
     if e.kind() == io::ErrorKind::PermissionDenied {
-        format!("Error: Permission denied: {}{}", path.display(), permission_hint())
+        format!(
+            "Error: Permission denied: {}{}",
+            path.display(),
+            permission_hint()
+        )
     } else {
         format!("Error listing directory: {e}")
     }
@@ -524,7 +597,10 @@ fn search_files(path: &Path, pattern: &str, recursive: bool) -> String {
         Err(e) => return search_error(&e, path),
     };
     raw.retain(|(entry_path, _)| {
-        let name = entry_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let name = entry_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
         glob_match(pattern, name)
     });
     raw.sort_by_key(|(a, _)| sort_key(a));
@@ -536,9 +612,24 @@ fn search_files(path: &Path, pattern: &str, recursive: bool) -> String {
     let total = raw.len();
     let mut lines = Vec::new();
     for (entry_path, is_dir) in raw.iter().take(MAX_RESULTS) {
-        let size = if *is_dir { 0 } else { fs::metadata(entry_path).map(|m| m.len()).unwrap_or(0) };
-        let relative = entry_path.strip_prefix(path).unwrap_or(entry_path).display().to_string();
-        lines.push(Entry { is_dir: *is_dir, size, relative }.to_line());
+        let size = if *is_dir {
+            0
+        } else {
+            fs::metadata(entry_path).map(|m| m.len()).unwrap_or(0)
+        };
+        let relative = entry_path
+            .strip_prefix(path)
+            .unwrap_or(entry_path)
+            .display()
+            .to_string();
+        lines.push(
+            Entry {
+                is_dir: *is_dir,
+                size,
+                relative,
+            }
+            .to_line(),
+        );
     }
     if total > MAX_RESULTS {
         lines.push(format!("... (truncated, {MAX_RESULTS}+ matches)"));
@@ -554,7 +645,11 @@ fn search_files(path: &Path, pattern: &str, recursive: bool) -> String {
 
 fn search_error(e: &io::Error, path: &Path) -> String {
     if e.kind() == io::ErrorKind::PermissionDenied {
-        format!("Error: Permission denied: {}{}", path.display(), permission_hint())
+        format!(
+            "Error: Permission denied: {}{}",
+            path.display(),
+            permission_hint()
+        )
     } else {
         format!("Error searching: {e}")
     }
@@ -625,7 +720,11 @@ fn get_file_info(path: &Path) -> String {
     }
 
     if file_type == "File" {
-        let ext = path.extension().and_then(|e| e.to_str()).map(|e| format!(".{e}")).unwrap_or_else(|| "(none)".to_string());
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| format!(".{e}"))
+            .unwrap_or_else(|| "(none)".to_string());
         lines.push(format!("Extension: {ext}"));
     }
 
@@ -640,7 +739,11 @@ fn get_file_info(path: &Path) -> String {
 
 fn info_error(e: &io::Error, path: &Path) -> String {
     if e.kind() == io::ErrorKind::PermissionDenied {
-        format!("Error: Permission denied: {}{}", path.display(), permission_hint())
+        format!(
+            "Error: Permission denied: {}{}",
+            path.display(),
+            permission_hint()
+        )
     } else {
         format!("Error getting file info: {e}")
     }
@@ -648,7 +751,9 @@ fn info_error(e: &io::Error, path: &Path) -> String {
 
 fn format_time(result: io::Result<SystemTime>) -> String {
     match result {
-        Ok(t) => chrono::DateTime::<chrono::Local>::from(t).format("%Y-%m-%d %H:%M:%S").to_string(),
+        Ok(t) => chrono::DateTime::<chrono::Local>::from(t)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string(),
         Err(_) => "unknown".to_string(),
     }
 }
@@ -688,7 +793,9 @@ fn glob_match(pattern: &str, name: &str) -> bool {
     fn matches(pattern: &[char], name: &[char]) -> bool {
         match (pattern.first(), name.first()) {
             (None, None) => true,
-            (Some('*'), _) => matches(&pattern[1..], name) || (!name.is_empty() && matches(pattern, &name[1..])),
+            (Some('*'), _) => {
+                matches(&pattern[1..], name) || (!name.is_empty() && matches(pattern, &name[1..]))
+            }
             (Some('?'), Some(_)) => matches(&pattern[1..], &name[1..]),
             (Some(p), Some(n)) if p.eq_ignore_ascii_case(n) => matches(&pattern[1..], &name[1..]),
             _ => false,
@@ -725,7 +832,10 @@ mod tests {
     fn relative_path_resolution() {
         let base = Path::new(r"C:\Users\test\Desktop");
         assert_eq!(resolve_path("notes.txt", base), base.join("notes.txt"));
-        assert_eq!(resolve_path(r"C:\absolute\path.txt", base), PathBuf::from(r"C:\absolute\path.txt"));
+        assert_eq!(
+            resolve_path(r"C:\absolute\path.txt", base),
+            PathBuf::from(r"C:\absolute\path.txt")
+        );
     }
 
     #[test]

@@ -65,5 +65,6 @@ impl From<&display::Display> for DisplayEntry {
 pub fn display_inventory() -> String {
     let displays = display::get_displays();
     let entries: Vec<DisplayEntry> = displays.iter().map(DisplayEntry::from).collect();
-    serde_json::to_string_pretty(&entries).unwrap_or_else(|e| format!("Error serializing display inventory: {e}"))
+    serde_json::to_string_pretty(&entries)
+        .unwrap_or_else(|e| format!("Error serializing display inventory: {e}"))
 }

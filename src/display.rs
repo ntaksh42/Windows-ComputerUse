@@ -7,8 +7,8 @@
 use windows::Win32::Foundation::{LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{
     DEVMODEW, DISPLAY_DEVICE_ATTACHED_TO_DESKTOP, DISPLAY_DEVICEW, ENUM_CURRENT_SETTINGS,
-    EnumDisplayDevicesW, EnumDisplayMonitors, EnumDisplaySettingsW, HDC, HMONITOR, MONITORINFOEXW,
-    GetMonitorInfoW,
+    EnumDisplayDevicesW, EnumDisplayMonitors, EnumDisplaySettingsW, GetMonitorInfoW, HDC, HMONITOR,
+    MONITORINFOEXW,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForSystem, MDT_EFFECTIVE_DPI};
 use windows::core::BOOL;
@@ -24,7 +24,12 @@ pub struct DisplayRect {
 
 impl DisplayRect {
     fn from_rect(rect: RECT) -> Self {
-        Self { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }
+        Self {
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+        }
     }
 
     pub fn width(&self) -> i32 {
@@ -62,12 +67,18 @@ fn attached_device_names() -> Vec<String> {
     let mut names = Vec::new();
     let mut device_index = 0u32;
     loop {
-        let mut device = DISPLAY_DEVICEW { cb: size_of::<DISPLAY_DEVICEW>() as u32, ..Default::default() };
+        let mut device = DISPLAY_DEVICEW {
+            cb: size_of::<DISPLAY_DEVICEW>() as u32,
+            ..Default::default()
+        };
         let ok = unsafe { EnumDisplayDevicesW(None, device_index, &mut device, 0) };
         if !ok.as_bool() {
             break;
         }
-        if device.StateFlags.contains(DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) {
+        if device
+            .StateFlags
+            .contains(DISPLAY_DEVICE_ATTACHED_TO_DESKTOP)
+        {
             names.push(wchar_to_string(&device.DeviceName).to_uppercase());
         }
         device_index += 1;
@@ -103,7 +114,10 @@ fn monitor_effective_dpi(hmonitor: HMONITOR) -> (Option<u32>, Option<f64>) {
             if dpi > 0 { Some(dpi) } else { None }
         });
     match dpi {
-        Some(dpi) => (Some(dpi), Some((dpi as f64 / 96.0 * 1_000_000.0).round() / 1_000_000.0)),
+        Some(dpi) => (
+            Some(dpi),
+            Some((dpi as f64 / 96.0 * 1_000_000.0).round() / 1_000_000.0),
+        ),
         None => (None, None),
     }
 }
@@ -111,7 +125,10 @@ fn monitor_effective_dpi(hmonitor: HMONITOR) -> (Option<u32>, Option<f64>) {
 fn display_orientation(device_name: &str, bounds: &DisplayRect) -> String {
     let mut device_name_wide: Vec<u16> = device_name.encode_utf16().collect();
     device_name_wide.push(0);
-    let mut devmode = DEVMODEW { dmSize: size_of::<DEVMODEW>() as u16, ..Default::default() };
+    let mut devmode = DEVMODEW {
+        dmSize: size_of::<DEVMODEW>() as u16,
+        ..Default::default()
+    };
     let ok = unsafe {
         EnumDisplaySettingsW(
             windows::core::PCWSTR(device_name_wide.as_ptr()),
@@ -123,10 +140,18 @@ fn display_orientation(device_name: &str, bounds: &DisplayRect) -> String {
         let width = devmode.dmPelsWidth;
         let height = devmode.dmPelsHeight;
         if width > 0 && height > 0 {
-            return if width >= height { "landscape".to_string() } else { "portrait".to_string() };
+            return if width >= height {
+                "landscape".to_string()
+            } else {
+                "portrait".to_string()
+            };
         }
     }
-    if bounds.width() >= bounds.height() { "landscape".to_string() } else { "portrait".to_string() }
+    if bounds.width() >= bounds.height() {
+        "landscape".to_string()
+    } else {
+        "portrait".to_string()
+    }
 }
 
 /// Enumerates active displays, ordered by `index`.
@@ -202,9 +227,18 @@ pub fn get_display_union_rect(indices: &[usize]) -> Result<RECT, String> {
         return Err("No displays detected".to_string());
     }
 
-    if let Some(&invalid) = indices.iter().find(|i| !displays.iter().any(|d| d.index == **i)) {
-        let available = displays.iter().map(|d| d.index.to_string()).collect::<Vec<_>>().join(",");
-        return Err(format!("Invalid display index {invalid}. Available displays: {available}"));
+    if let Some(&invalid) = indices
+        .iter()
+        .find(|i| !displays.iter().any(|d| d.index == **i))
+    {
+        let available = displays
+            .iter()
+            .map(|d| d.index.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        return Err(format!(
+            "Invalid display index {invalid}. Available displays: {available}"
+        ));
     }
 
     let selected: Vec<&Display> = indices
@@ -217,7 +251,12 @@ pub fn get_display_union_rect(indices: &[usize]) -> Result<RECT, String> {
     let right = selected.iter().map(|d| d.bounds.right).max().unwrap();
     let bottom = selected.iter().map(|d| d.bounds.bottom).max().unwrap();
 
-    Ok(RECT { left, top, right, bottom })
+    Ok(RECT {
+        left,
+        top,
+        right,
+        bottom,
+    })
 }
 
 #[cfg(test)]

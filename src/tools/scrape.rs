@@ -9,8 +9,8 @@
 use std::net::IpAddr;
 use std::time::Duration;
 
-use reqwest::redirect::Policy;
 use reqwest::Url;
+use reqwest::redirect::Policy;
 use rmcp::schemars;
 use serde::Deserialize;
 
@@ -82,10 +82,11 @@ async fn fetch_markdown(url: &str) -> Result<String, String> {
                 .get(reqwest::header::LOCATION)
                 .and_then(|v| v.to_str().ok())
                 .ok_or_else(|| format!("Error: Redirect from {current} has no Location header"))?;
-            let base = Url::parse(&current).map_err(|e| format!("Error: Invalid URL: {current}: {e}"))?;
-            let next = base
-                .join(location)
-                .map_err(|e| format!("Error: Invalid redirect location from {current}: {location}: {e}"))?;
+            let base =
+                Url::parse(&current).map_err(|e| format!("Error: Invalid URL: {current}: {e}"))?;
+            let next = base.join(location).map_err(|e| {
+                format!("Error: Invalid redirect location from {current}: {location}: {e}")
+            })?;
             current = next.to_string();
             continue;
         }
@@ -94,15 +95,23 @@ async fn fetch_markdown(url: &str) -> Result<String, String> {
         break;
     }
 
-    let response = response.ok_or_else(|| "Error: Too many redirects while fetching URL".to_string())?;
+    let response =
+        response.ok_or_else(|| "Error: Too many redirects while fetching URL".to_string())?;
     let status = response.status();
     if !status.is_success() {
         return Err(format!("Error: HTTP error for {current}: {status}"));
     }
 
-    let html = response.text().await.map_err(|e| format!("Error: Failed to read response body from {current}: {e}"))?;
-    let converter = htmd::HtmlToMarkdown::builder().skip_tags(vec!["script", "style"]).build();
-    converter.convert(&html).map_err(|e| format!("Error: Failed to convert HTML to Markdown: {e}"))
+    let html = response
+        .text()
+        .await
+        .map_err(|e| format!("Error: Failed to read response body from {current}: {e}"))?;
+    let converter = htmd::HtmlToMarkdown::builder()
+        .skip_tags(vec!["script", "style"])
+        .build();
+    converter
+        .convert(&html)
+        .map_err(|e| format!("Error: Failed to convert HTML to Markdown: {e}"))
 }
 
 /// Validates a URL is safe to fetch (SSRF protection): only http/https,
@@ -118,7 +127,9 @@ async fn validate_url(url: &str) -> Result<(), String> {
         ));
     }
 
-    let host = parsed.host_str().ok_or_else(|| format!("Error: URL has no hostname: {url}"))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| format!("Error: URL has no hostname: {url}"))?;
     if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err("Error: URLs with embedded credentials are not allowed.".to_string());
     }
@@ -139,7 +150,9 @@ async fn validate_url(url: &str) -> Result<(), String> {
         }
     }
     if !any {
-        return Err(format!("Error: Could not resolve hostname '{host}': no addresses returned"));
+        return Err(format!(
+            "Error: Could not resolve hostname '{host}': no addresses returned"
+        ));
     }
 
     Ok(())

@@ -9,18 +9,21 @@ use rmcp::{
     tool, tool_handler, tool_router,
 };
 
+use crate::tools::app::{self, AppParams};
 use crate::tools::click::{self, ClickParams};
 use crate::tools::clipboard::{self, ClipboardParams};
-use crate::tools::filesystem::{self, FileSystemParams};
-use crate::tools::notification::{self, NotificationParams};
-use crate::tools::registry::{self, RegistryParams};
-use crate::tools::scrape::{self, ScrapeParams};
 use crate::tools::display_inventory::{self, DisplayInventoryParams};
+use crate::tools::filesystem::{self, FileSystemParams};
 use crate::tools::move_mouse::{self, MoveParams};
 use crate::tools::multi_edit::{self, MultiEditParams};
 use crate::tools::multi_select::{self, MultiSelectParams};
+use crate::tools::notification::{self, NotificationParams};
+use crate::tools::process::{self, ProcessParams};
+use crate::tools::registry::{self, RegistryParams};
+use crate::tools::scrape::{self, ScrapeParams};
 use crate::tools::screenshot::{self, ScreenshotParams};
 use crate::tools::scroll::{self, ScrollParams};
+use crate::tools::shell::{self, PowerShellParams};
 use crate::tools::shortcut::{self, ShortcutParams};
 use crate::tools::typing::{self, TypeParams};
 use crate::tools::wait::{self, WaitParams};
@@ -41,7 +44,10 @@ pub struct WindowsComputerUseServer;
 
 #[tool_router]
 impl WindowsComputerUseServer {
-    #[tool(name = "Wait", description = "Wait for a number of seconds (1-60) before returning.")]
+    #[tool(
+        name = "Wait",
+        description = "Wait for a number of seconds (1-60) before returning."
+    )]
     async fn wait(
         &self,
         Parameters(WaitParams { duration }): Parameters<WaitParams>,
@@ -53,6 +59,7 @@ impl WindowsComputerUseServer {
     }
 
     #[tool(
+<<<<<<< HEAD
         name = "Click",
         description = "Performs mouse clicks at specified coordinates [x, y] or passing a UI element's label/id. Supports button types: 'left' for selection/activation, 'right' for context menus, 'middle'. Supports clicks: 0=hover only (no click), 1=single click (select/focus), 2=double click (open/activate). Provide either loc or label."
     )]
@@ -137,7 +144,9 @@ impl WindowsComputerUseServer {
         &self,
         Parameters(DisplayInventoryParams {}): Parameters<DisplayInventoryParams>,
     ) -> Result<CallToolResult, McpError> {
-        Ok(CallToolResult::success(vec![ContentBlock::text(display_inventory::display_inventory())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            display_inventory::display_inventory(),
+        )]))
     }
 
     #[tool(
@@ -163,24 +172,68 @@ impl WindowsComputerUseServer {
         name = "FileSystem",
         description = "Manages file system operations with eight modes: 'read' (read text file contents with optional line offset/limit), 'write' (create or overwrite a file, set append=true to append), 'copy' (copy file or directory to destination), 'move' (move or rename file/directory), 'delete' (delete file or directory, set recursive=true for non-empty dirs), 'list' (list directory contents with optional pattern filter), 'search' (find files matching a glob pattern), 'info' (get file/directory metadata like size, dates, type). Relative paths are resolved from the user's Desktop folder. Use absolute paths to access other locations."
     )]
-    async fn file_system(&self, Parameters(params): Parameters<FileSystemParams>) -> Result<CallToolResult, McpError> {
-        Ok(CallToolResult::success(vec![ContentBlock::text(filesystem::file_system(params))]))
+    async fn file_system(
+        &self,
+        Parameters(params): Parameters<FileSystemParams>,
+    ) -> Result<CallToolResult, McpError> {
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            filesystem::file_system(params),
+        )]))
     }
 
     #[tool(
         name = "Registry",
         description = "Read and write the Windows Registry. Keywords: regedit, registry key, HKEY, HKCU, HKLM, Windows settings, registry value. Use mode=\"get\" to read a value, mode=\"set\" to create/update a value, mode=\"delete\" to remove a value or key, mode=\"list\" to list values and sub-keys under a path. Paths use PowerShell format (e.g. \"HKCU:\\Software\\MyApp\", \"HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\")."
     )]
-    async fn registry(&self, Parameters(params): Parameters<RegistryParams>) -> Result<CallToolResult, McpError> {
-        Ok(CallToolResult::success(vec![ContentBlock::text(registry::registry(params))]))
+    async fn registry(
+        &self,
+        Parameters(params): Parameters<RegistryParams>,
+    ) -> Result<CallToolResult, McpError> {
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            registry::registry(params),
+        )]))
     }
 
     #[tool(
         name = "Scrape",
         description = "Fetch/scrape web page content from a URL. Keywords: scrape, fetch, browse, web, URL, extract, download, read webpage. Performs a lightweight HTTP request to the URL and returns the page content converted to Markdown."
     )]
-    async fn scrape(&self, Parameters(params): Parameters<ScrapeParams>) -> Result<CallToolResult, McpError> {
+    async fn scrape(
+        &self,
+        Parameters(params): Parameters<ScrapeParams>,
+    ) -> Result<CallToolResult, McpError> {
         match scrape::scrape(params).await {
+            Ok(message) => Ok(CallToolResult::success(vec![ContentBlock::text(message)])),
+            Err(message) => Ok(CallToolResult::error(vec![ContentBlock::text(message)])),
+        }
+    }
+
+    #[tool(
+        name = "PowerShell",
+        description = "Shell/command execution. A comprehensive system tool for executing any PowerShell commands: navigate the file system, manage files and processes, and execute system-level operations."
+    )]
+    async fn power_shell(
+        &self,
+        Parameters(PowerShellParams { command, timeout }): Parameters<PowerShellParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let message = tokio::task::spawn_blocking(move || shell::powershell(&command, timeout))
+            .await
+            .unwrap_or_else(|e| format!("Response: Command execution failed: {e}\nStatus Code: 1"));
+        Ok(CallToolResult::success(vec![ContentBlock::text(message)]))
+    }
+
+    #[tool(
+        name = "App",
+        description = "Open/start/launch applications and manage windows. Four modes: 'launch' (opens an application by Start Menu name), 'launch_executable' (launches one executable path with separated argv and optional cwd), 'resize' (adjusts a named or active window), and 'switch' (brings a specific window into focus)."
+    )]
+    async fn app(
+        &self,
+        Parameters(params): Parameters<AppParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = tokio::task::spawn_blocking(move || app::app(params))
+            .await
+            .unwrap_or_else(|e| Err(format!("App tool panicked: {e}")));
+        match result {
             Ok(message) => Ok(CallToolResult::success(vec![ContentBlock::text(message)])),
             Err(message) => Ok(CallToolResult::error(vec![ContentBlock::text(message)])),
         }
@@ -190,8 +243,13 @@ impl WindowsComputerUseServer {
         name = "Clipboard",
         description = "Copy/paste clipboard operations. Keywords: copy, paste, cut, clipboard, text transfer. Use mode=\"get\" to read current clipboard content, mode=\"set\" to set clipboard text."
     )]
-    async fn clipboard(&self, Parameters(ClipboardParams { mode, text }): Parameters<ClipboardParams>) -> Result<CallToolResult, McpError> {
-        Ok(CallToolResult::success(vec![ContentBlock::text(clipboard::clipboard(mode, text))]))
+    async fn clipboard(
+        &self,
+        Parameters(ClipboardParams { mode, text }): Parameters<ClipboardParams>,
+    ) -> Result<CallToolResult, McpError> {
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            clipboard::clipboard(mode, text),
+        )]))
     }
 
     #[tool(
@@ -200,9 +258,32 @@ impl WindowsComputerUseServer {
     )]
     async fn notification(
         &self,
-        Parameters(NotificationParams { title, message, app_id }): Parameters<NotificationParams>,
+        Parameters(NotificationParams {
+            title,
+            message,
+            app_id,
+        }): Parameters<NotificationParams>,
     ) -> Result<CallToolResult, McpError> {
-        Ok(CallToolResult::success(vec![ContentBlock::text(notification::send_notification(&title, &message, &app_id))]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            notification::send_notification(&title, &message, &app_id),
+        )]))
+    }
+
+    #[tool(
+        name = "Process",
+        description = "List and kill running processes. Use mode=\"list\" to list running processes with filtering and sorting options. Use mode=\"kill\" to terminate processes by PID or name."
+    )]
+    async fn process(
+        &self,
+        Parameters(params): Parameters<ProcessParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = tokio::task::spawn_blocking(move || process::process(params))
+            .await
+            .unwrap_or_else(|e| Err(format!("Process tool panicked: {e}")));
+        match result {
+            Ok(message) => Ok(CallToolResult::success(vec![ContentBlock::text(message)])),
+            Err(message) => Ok(CallToolResult::error(vec![ContentBlock::text(message)])),
+        }
     }
 }
 

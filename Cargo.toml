@@ -8,6 +8,7 @@ anyhow = "1.0.103"
 arboard = "3.6.1"
 base64 = "0.22.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+csv = "1.4.0"
 dirs = "6.0.0"
 htmd = "0.5.4"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
@@ -15,7 +16,9 @@ reqwest = { version = "0.13.4", default-features = false, features = ["rustls", 
 rmcp = { version = "2.2.0", features = ["server", "macros", "transport-io", "schemars"] }
 schemars = "1.2.1"
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
+serde_json = { version = "1.0.150", features = ["preserve_order"] }
+strsim = "0.11.1"
+sysinfo = "0.39.6"
 tokio = { version = "1.53.0", features = ["full"] }
 windows = { version = "0.62.2", features = [
     "Data_Xml_Dom",
@@ -23,9 +26,14 @@ windows = { version = "0.62.2", features = [
     "UI_Notifications",
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_Console",
     "Win32_System_DataExchange",
+    "Win32_System_Environment",
     "Win32_System_Memory",
     "Win32_System_SystemServices",
+    "Win32_System_Threading",
+    "Win32_System_WindowsProgramming",
     "Win32_System_WinRT",
     "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",

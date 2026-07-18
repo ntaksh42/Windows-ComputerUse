@@ -13,8 +13,7 @@ use windows::Win32::Graphics::Gdi::{
     DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC, SRCCOPY, SelectObject,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-    SM_YVIRTUALSCREEN,
+    GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 
 /// Screen capture backend.
@@ -50,7 +49,12 @@ pub fn virtual_screen_rect() -> RECT {
         let y = GetSystemMetrics(SM_YVIRTUALSCREEN);
         let cx = GetSystemMetrics(SM_CXVIRTUALSCREEN);
         let cy = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-        RECT { left: x, top: y, right: x + cx, bottom: y + cy }
+        RECT {
+            left: x,
+            top: y,
+            right: x + cx,
+            bottom: y + cy,
+        }
     }
 }
 
@@ -93,8 +97,17 @@ unsafe fn capture_rect_gdi(rect: RECT, width: i32, height: i32) -> Result<Vec<u8
         }
 
         let old_obj = SelectObject(hdc_mem, hbitmap.into());
-        let blit_result =
-            BitBlt(hdc_mem, 0, 0, width, height, Some(hdc_screen), rect.left, rect.top, SRCCOPY);
+        let blit_result = BitBlt(
+            hdc_mem,
+            0,
+            0,
+            width,
+            height,
+            Some(hdc_screen),
+            rect.left,
+            rect.top,
+            SRCCOPY,
+        );
 
         let mut buffer = vec![0u8; width as usize * height as usize * 4];
         let mut bmi = BITMAPINFO::default();
@@ -153,7 +166,12 @@ mod tests {
 
     #[test]
     fn capture_rect_rejects_empty_region() {
-        let rect = RECT { left: 0, top: 0, right: 0, bottom: 100 };
+        let rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 100,
+        };
         let err = capture_rect(rect, Backend::Gdi).unwrap_err();
         assert!(err.contains("Invalid capture region"));
     }

@@ -66,6 +66,9 @@ mod tests {
 
     #[test]
     fn escapes_special_characters() {
-        assert_eq!(xml_escape("<a> & \"b\" 'c'"), "&lt;a&gt; &amp; &quot;b&quot; &apos;c&apos;");
+        assert_eq!(
+            xml_escape("<a> & \"b\" 'c'"),
+            "&lt;a&gt; &amp; &quot;b&quot; &apos;c&apos;"
+        );
     }
 }
