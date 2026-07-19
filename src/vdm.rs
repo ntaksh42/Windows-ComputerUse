@@ -106,6 +106,16 @@ pub fn is_window_on_current_desktop(handle: isize) -> bool {
     }
 }
 
+pub fn api_available() -> Result<(), String> {
+    crate::uia::ensure_com_initialized()?;
+    unsafe {
+        let _: IVirtualDesktopManager =
+            CoCreateInstance(&VirtualDesktopManager, None, CLSCTX_INPROC_SERVER)
+                .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

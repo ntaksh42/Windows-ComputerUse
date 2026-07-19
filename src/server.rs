@@ -16,6 +16,7 @@ use crate::tools::click::{self, ClickParams};
 use crate::tools::clipboard::{self, ClipboardParams};
 use crate::tools::cursor_position::{self, CursorPositionParams};
 use crate::tools::display_inventory::{self, DisplayInventoryParams};
+use crate::tools::doctor::{self, DoctorParams};
 use crate::tools::filesystem::{self, FileSystemParams};
 use crate::tools::invoke_element::{self, InvokeElementParams};
 use crate::tools::move_mouse::{self, MoveParams};
@@ -232,6 +233,23 @@ impl WindowsComputerUseServer {
         Ok(CallToolResult::success(vec![ContentBlock::text(
             display_inventory::display_inventory(),
         )]))
+    }
+
+    #[tool(
+        name = "Doctor",
+        description = "Runs environment diagnostics for UI Automation, displays, DXGI capture, PowerShell, administrator status, and virtual desktop support. Returns JSON with checks and blockers.",
+        annotations(read_only_hint = true, destructive_hint = false)
+    )]
+    async fn doctor(
+        &self,
+        Parameters(DoctorParams {}): Parameters<DoctorParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let audit = begin_tool!("Doctor");
+        let result = tokio::task::spawn_blocking(doctor::doctor).await;
+        audit.finish(result.is_ok());
+        let message = result
+            .unwrap_or_else(|error| format!(r#"{{"blockers":["Doctor tool panicked: {error}"]}}"#));
+        Ok(CallToolResult::success(vec![ContentBlock::text(message)]))
     }
 
     #[tool(
