@@ -217,6 +217,9 @@ pub fn wait_for(params: WaitForParams) -> Result<String, String> {
     }
 
     let snapshot_params = SnapshotParams {
+        scope: None,
+        window: None,
+        timeout_ms: None,
         use_vision: Some(BoolOrString::Bool(false)),
         use_dom: Some(BoolOrString::Bool(use_dom)),
         use_annotation: Some(BoolOrString::Bool(false)),

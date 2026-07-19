@@ -24,9 +24,109 @@ use crate::params::{BoolOrString, ListOrString, opt_bool};
 use crate::tools::screenshot;
 use crate::{capture, display, ia2, state, uia, vdm, window};
 
+const DEFAULT_UIA_TIMEOUT_MS: u64 = 2_000;
+const MIN_UIA_TIMEOUT_MS: u64 = 100;
+const MAX_UIA_TIMEOUT_MS: u64 = 30_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SnapshotScope {
+    Foreground,
+    All,
+}
+
+#[derive(Debug)]
+struct ScanOptions {
+    scope: SnapshotScope,
+    window: Option<String>,
+    timeout: Duration,
+}
+
+impl ScanOptions {
+    fn resolve(
+        scope: Option<SnapshotScope>,
+        window: Option<String>,
+        timeout_ms: Option<u64>,
+    ) -> Result<Self, String> {
+        let scope = scope.unwrap_or(SnapshotScope::Foreground);
+        if scope == SnapshotScope::All && window.is_some() {
+            return Err("window cannot be combined with scope=all".to_string());
+        }
+        let timeout_ms = timeout_ms.unwrap_or(DEFAULT_UIA_TIMEOUT_MS);
+        if !(MIN_UIA_TIMEOUT_MS..=MAX_UIA_TIMEOUT_MS).contains(&timeout_ms) {
+            return Err(format!(
+                "timeout_ms must be between {MIN_UIA_TIMEOUT_MS} and {MAX_UIA_TIMEOUT_MS}"
+            ));
+        }
+        Ok(Self {
+            scope,
+            window,
+            timeout: Duration::from_millis(timeout_ms),
+        })
+    }
+}
+
+fn select_scan_targets<'a>(
+    options: &ScanOptions,
+    foreground: Option<&window::WindowInfo>,
+    windows: &'a [window::SnapshotWindow],
+) -> Result<Vec<&'a window::SnapshotWindow>, String> {
+    if let Some(query) = options.window.as_deref() {
+        let query = query.to_lowercase();
+        let mut scored: Vec<_> = windows
+            .iter()
+            .map(|candidate| {
+                (
+                    candidate,
+                    crate::fuzzy::ratio(&query, &candidate.title.to_lowercase()),
+                )
+            })
+            .filter(|(_, score)| *score >= 70.0)
+            .collect();
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let Some((best, best_score)) = scored.first() else {
+            return Err(format!("Window not found: {query}"));
+        };
+        if scored
+            .get(1)
+            .is_some_and(|(_, score)| (*score - *best_score).abs() < f64::EPSILON)
+        {
+            return Err(format!("Window query is ambiguous: {query}"));
+        }
+        return Ok(vec![*best]);
+    }
+
+    let foreground_handle = foreground.map(|window| window.handle);
+    let foreground_window = foreground_handle
+        .and_then(|handle| windows.iter().find(|candidate| candidate.handle == handle));
+    match options.scope {
+        SnapshotScope::Foreground => foreground_window
+            .map(|window| vec![window])
+            .ok_or_else(|| "No foreground window is available for UI tree scanning".to_string()),
+        SnapshotScope::All => {
+            let mut ordered = Vec::with_capacity(windows.len());
+            if let Some(window) = foreground_window {
+                ordered.push(window);
+            }
+            ordered.extend(
+                windows
+                    .iter()
+                    .filter(|candidate| Some(candidate.handle) != foreground_handle),
+            );
+            Ok(ordered)
+        }
+    }
+}
+
 /// Parameters for the `Snapshot` tool (docs/SPEC.md §6).
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SnapshotParams {
+    #[schemars(description = "UI tree scan scope. Defaults to foreground.")]
+    pub scope: Option<SnapshotScope>,
+    #[schemars(description = "Fuzzy title query for scanning one explicit window.")]
+    pub window: Option<String>,
+    #[schemars(description = "Total UIA scan deadline in milliseconds (100-30000).")]
+    pub timeout_ms: Option<u64>,
     #[schemars(description = "Include a PNG screenshot in the response. Defaults to false.")]
     pub use_vision: Option<BoolOrString>,
     #[schemars(
@@ -108,24 +208,48 @@ struct WindowTree {
 /// (0.5s, 1s, 2s — docs/SPEC.md "Snapshot 性能設計"). Returns `None` if the
 /// window never succeeds, matching the Python reference's
 /// `failed_handles`: that window silently contributes nothing.
+enum WalkWindowResult {
+    Success((uia::RawElement, Vec<uia::RawElement>)),
+    Failed,
+    DeadlineExceeded,
+}
+
+fn bounded_retry_delay(now: Instant, deadline: Instant, requested: Duration) -> Option<Duration> {
+    deadline
+        .checked_duration_since(now)
+        .filter(|remaining| !remaining.is_zero())
+        .map(|remaining| remaining.min(requested))
+}
+
 fn walk_window_with_retry(
     automation: &IUIAutomation,
     cache_request: &IUIAutomationCacheRequest,
     condition: &IUIAutomationCondition,
     hwnd: HWND,
     reverse_children: bool,
-) -> Option<(uia::RawElement, Vec<uia::RawElement>)> {
-    const MAX_RETRIES: u32 = 3;
-    for attempt in 0..=MAX_RETRIES {
+    deadline: Instant,
+    max_retries: u32,
+) -> WalkWindowResult {
+    for attempt in 0..=max_retries {
+        if Instant::now() >= deadline {
+            return WalkWindowResult::DeadlineExceeded;
+        }
         match uia::walk_window(automation, cache_request, condition, hwnd, reverse_children) {
-            Ok(result) => return Some(result),
-            Err(_) if attempt < MAX_RETRIES => {
-                std::thread::sleep(Duration::from_millis(500 * (1u64 << attempt)));
+            Ok(result) => return WalkWindowResult::Success(result),
+            Err(_) if attempt < max_retries => {
+                let Some(delay) = bounded_retry_delay(
+                    Instant::now(),
+                    deadline,
+                    Duration::from_millis(500 * (1u64 << attempt)),
+                ) else {
+                    return WalkWindowResult::DeadlineExceeded;
+                };
+                std::thread::sleep(delay);
             }
-            Err(_) => return None,
+            Err(_) => return WalkWindowResult::Failed,
         }
     }
-    None
+    WalkWindowResult::Failed
 }
 
 fn format_tree_line(node: &state::ElementNode, action: &str) -> String {
@@ -478,6 +602,8 @@ fn draw_annotations(
 /// assembles the response text. Returns a caller-facing error message (not
 /// yet wrapped with "Error capturing desktop state: ...").
 pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String> {
+    let scan_options =
+        ScanOptions::resolve(params.scope, params.window.clone(), params.timeout_ms)?;
     let use_vision = opt_bool(&params.use_vision, false)?;
     let use_dom = opt_bool(&params.use_dom, false)?;
     let use_annotation = opt_bool(&params.use_annotation, true)?;
@@ -522,6 +648,7 @@ pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String>
     let mut dom_found = false;
     let mut dom_scroll_percent = 0.0;
     let mut window_trees: Vec<WindowTree> = Vec::new();
+    let mut uia_truncated = false;
 
     if use_ui_tree && !walk_windows.is_empty() {
         uia::ensure_com_initialized()?;
@@ -533,20 +660,14 @@ pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String>
         let dom_cache_request =
             uia::build_cache_request(&automation, &dom_condition).map_err(|e| e.to_string())?;
 
-        // Active/foreground window first so it gets the lowest label
-        // indices, then the rest in enumeration order.
-        let mut ordered: Vec<&window::SnapshotWindow> = Vec::new();
-        if let Some(fg) = &foreground
-            && let Some(w) = walk_windows.iter().find(|w| w.handle == fg.handle)
-        {
-            ordered.push(w);
-        }
-        for w in &walk_windows {
-            if foreground.as_ref().map(|f| f.handle) != Some(w.handle) {
-                ordered.push(w);
-            }
-        }
+        let ordered = select_scan_targets(&scan_options, foreground.as_ref(), &walk_windows)?;
 
+        let deadline = Instant::now() + scan_options.timeout;
+        let max_retries = if scan_options.scope == SnapshotScope::All {
+            0
+        } else {
+            3
+        };
         for win in ordered {
             let hwnd = HWND(win.handle as *mut _);
             let window_condition = if use_dom && win.is_browser() {
@@ -559,14 +680,21 @@ pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String>
             } else {
                 &cache_request
             };
-            let Some((root_raw, elements)) = walk_window_with_retry(
+            let (root_raw, elements) = match walk_window_with_retry(
                 &automation,
                 window_cache_request,
                 window_condition,
                 hwnd,
                 !(use_dom && win.is_browser()),
-            ) else {
-                continue; // window never succeeded; contributes nothing
+                deadline,
+                max_retries,
+            ) {
+                WalkWindowResult::Success(result) => result,
+                WalkWindowResult::Failed => continue,
+                WalkWindowResult::DeadlineExceeded => {
+                    uia_truncated = true;
+                    break;
+                }
             };
 
             let window_label = if !win.title.is_empty() {
@@ -873,6 +1001,12 @@ pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String>
     if use_ui_tree {
         text += "\n\nUI Tree:\n";
         text += &render_tree(&window_trees);
+        if uia_truncated {
+            text += &format!(
+                "\nUI Tree Scan: truncated at timeout_ms={}",
+                scan_options.timeout.as_millis()
+            );
+        }
     } else {
         text += "\n\nUI Tree: Skipped for fast screenshot-only capture. Call Snapshot when you need interactive or scrollable elements.\n";
     }
@@ -900,6 +1034,102 @@ pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn snapshot_window(handle: isize, title: &str) -> window::SnapshotWindow {
+        window::SnapshotWindow {
+            handle,
+            title: title.to_string(),
+            class_name: "TestWindow".to_string(),
+            pid: handle as u32,
+        }
+    }
+
+    #[test]
+    fn scan_options_default_to_foreground_and_two_seconds() {
+        let options = ScanOptions::resolve(None, None, None).unwrap();
+        assert_eq!(options.scope, SnapshotScope::Foreground);
+        assert_eq!(options.timeout, Duration::from_millis(2_000));
+    }
+
+    #[test]
+    fn scan_options_reject_all_scope_with_window_query() {
+        let error =
+            ScanOptions::resolve(Some(SnapshotScope::All), Some("Claude".to_string()), None)
+                .unwrap_err();
+        assert_eq!(error, "window cannot be combined with scope=all");
+    }
+
+    #[test]
+    fn scan_options_reject_timeout_outside_range() {
+        assert!(ScanOptions::resolve(None, None, Some(99)).is_err());
+        assert!(ScanOptions::resolve(None, None, Some(30_001)).is_err());
+    }
+
+    #[test]
+    fn retry_delay_never_exceeds_the_global_deadline() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_millis(100);
+        assert_eq!(
+            bounded_retry_delay(now, deadline, Duration::from_millis(500)),
+            Some(Duration::from_millis(100))
+        );
+        assert_eq!(
+            bounded_retry_delay(deadline, deadline, Duration::from_millis(1)),
+            None
+        );
+    }
+
+    #[test]
+    fn foreground_scope_selects_only_the_focused_window() {
+        let windows = vec![snapshot_window(1, "Claude"), snapshot_window(2, "Edge")];
+        let foreground = window::WindowInfo {
+            handle: 1,
+            title: "Claude".to_string(),
+            pid: 1,
+        };
+        let selected = select_scan_targets(
+            &ScanOptions::resolve(None, None, None).unwrap(),
+            Some(&foreground),
+            &windows,
+        )
+        .unwrap();
+        assert_eq!(
+            selected.iter().map(|w| w.handle).collect::<Vec<_>>(),
+            vec![1]
+        );
+    }
+
+    #[test]
+    fn all_scope_keeps_foreground_first() {
+        let windows = vec![snapshot_window(2, "Edge"), snapshot_window(1, "Claude")];
+        let foreground = window::WindowInfo {
+            handle: 1,
+            title: "Claude".to_string(),
+            pid: 1,
+        };
+        let options = ScanOptions::resolve(Some(SnapshotScope::All), None, None).unwrap();
+        let selected = select_scan_targets(&options, Some(&foreground), &windows).unwrap();
+        assert_eq!(
+            selected.iter().map(|w| w.handle).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn window_query_selects_the_best_title_match() {
+        let windows = vec![
+            snapshot_window(1, "Claude"),
+            snapshot_window(2, "Claude Settings"),
+            snapshot_window(3, "Edge"),
+        ];
+        let options =
+            ScanOptions::resolve(None, Some("Claude Settings".to_string()), None).unwrap();
+        let selected = select_scan_targets(&options, None, &windows).unwrap();
+        assert_eq!(
+            selected.iter().map(|w| w.handle).collect::<Vec<_>>(),
+            vec![2]
+        );
+    }
 
     #[test]
     fn table_renders_header_rule_and_rows() {
