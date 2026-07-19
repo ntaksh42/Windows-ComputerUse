@@ -2,11 +2,48 @@
 //! Click/Type/Scroll/Move/MultiSelect/MultiEdit can resolve a UI element
 //! `label` to screen coordinates without re-querying the accessibility tree.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupportedAction {
+    Invoke,
+    SelectionItem,
+    Toggle,
+    ExpandCollapse,
+}
+
+impl SupportedAction {
+    pub fn highest_priority(actions: &[Self]) -> Option<Self> {
+        [
+            Self::Invoke,
+            Self::SelectionItem,
+            Self::Toggle,
+            Self::ExpandCollapse,
+        ]
+        .into_iter()
+        .find(|candidate| actions.contains(candidate))
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Invoke => "invoke",
+            Self::SelectionItem => "select",
+            Self::Toggle => "toggle",
+            Self::ExpandCollapse => "expand_collapse",
+        }
+    }
+}
 
 /// A single UI element discovered by Snapshot's accessibility-tree walk.
 #[derive(Debug, Clone)]
 pub struct ElementNode {
+    pub element_id: u64,
+    pub parent_id: Option<u64>,
+    pub owner_handle: isize,
+    pub runtime_id: Vec<i32>,
+    pub automation_id: String,
+    pub supported_actions: Vec<SupportedAction>,
     pub name: String,
     pub control_type: String,
     pub center: (i32, i32),
@@ -23,11 +60,21 @@ pub struct ElementNode {
 /// `scrollable_nodes` for the remainder.
 #[derive(Debug, Clone, Default)]
 pub struct DesktopState {
+    pub generation: u32,
     pub interactive_nodes: Vec<ElementNode>,
     pub scrollable_nodes: Vec<ElementNode>,
 }
 
 static STATE: OnceLock<Mutex<Option<DesktopState>>> = OnceLock::new();
+static GENERATION: AtomicU32 = AtomicU32::new(0);
+
+pub fn next_generation() -> u32 {
+    GENERATION.fetch_add(1, Ordering::Relaxed).wrapping_add(1)
+}
+
+pub fn element_id(generation: u32, index: usize) -> u64 {
+    ((generation as u64) << 32) | index as u64
+}
 
 fn state_lock() -> &'static Mutex<Option<DesktopState>> {
     STATE.get_or_init(|| Mutex::new(None))
@@ -45,6 +92,23 @@ pub fn clear_state() {
 }
 
 const EMPTY_STATE_ERROR: &str = "Desktop state is empty. Please call Snapshot first.";
+
+pub fn resolve_element(id: u64) -> Result<ElementNode, String> {
+    let guard = state_lock().lock().unwrap();
+    let state = guard
+        .as_ref()
+        .ok_or_else(|| EMPTY_STATE_ERROR.to_string())?;
+    if id >> 32 != state.generation as u64 {
+        return Err(format!("Element id {id} is stale"));
+    }
+    state
+        .interactive_nodes
+        .iter()
+        .chain(&state.scrollable_nodes)
+        .find(|node| node.element_id == id)
+        .cloned()
+        .ok_or_else(|| format!("Element id {id} was not found"))
+}
 
 /// Resolves a single UI element `label` to screen coordinates.
 ///
@@ -99,6 +163,12 @@ mod tests {
 
     fn node(x: i32, y: i32) -> ElementNode {
         ElementNode {
+            element_id: 0,
+            parent_id: None,
+            owner_handle: 0,
+            runtime_id: Vec::new(),
+            automation_id: String::new(),
+            supported_actions: Vec::new(),
             name: "n".into(),
             control_type: "Button".into(),
             center: (x, y),
@@ -119,6 +189,7 @@ mod tests {
     fn resolves_interactive_then_scrollable_offset() {
         let _g = TEST_GUARD.lock().unwrap();
         set_state(DesktopState {
+            generation: 0,
             interactive_nodes: vec![node(1, 1), node(2, 2)],
             scrollable_nodes: vec![node(3, 3)],
         });
@@ -133,6 +204,7 @@ mod tests {
     fn resolves_labels_in_bulk() {
         let _g = TEST_GUARD.lock().unwrap();
         set_state(DesktopState {
+            generation: 0,
             interactive_nodes: vec![node(1, 1)],
             scrollable_nodes: vec![node(2, 2)],
         });
@@ -140,6 +212,45 @@ mod tests {
         assert_eq!(
             resolve_labels(&[0, 5]),
             Err("Label 5 out of range".to_string())
+        );
+        clear_state();
+    }
+
+    #[test]
+    fn supported_actions_use_semantic_priority_order() {
+        assert_eq!(
+            SupportedAction::highest_priority(&[
+                SupportedAction::Toggle,
+                SupportedAction::Invoke,
+                SupportedAction::SelectionItem,
+            ]),
+            Some(SupportedAction::Invoke)
+        );
+    }
+
+    #[test]
+    fn a_new_generation_invalidates_old_element_ids() {
+        let _g = TEST_GUARD.lock().unwrap();
+        clear_state();
+        let first_generation = next_generation();
+        let mut first = node(10, 20);
+        first.element_id = element_id(first_generation, 0);
+        set_state(DesktopState {
+            generation: first_generation,
+            interactive_nodes: vec![first.clone()],
+            scrollable_nodes: vec![],
+        });
+        assert_eq!(resolve_element(first.element_id).unwrap().center, (10, 20));
+
+        let second_generation = next_generation();
+        set_state(DesktopState {
+            generation: second_generation,
+            interactive_nodes: vec![],
+            scrollable_nodes: vec![],
+        });
+        assert_eq!(
+            resolve_element(first.element_id).unwrap_err(),
+            format!("Element id {} is stale", first.element_id)
         );
         clear_state();
     }

@@ -15,6 +15,7 @@ use crate::tools::click::{self, ClickParams};
 use crate::tools::clipboard::{self, ClipboardParams};
 use crate::tools::display_inventory::{self, DisplayInventoryParams};
 use crate::tools::filesystem::{self, FileSystemParams};
+use crate::tools::invoke_element::{self, InvokeElementParams};
 use crate::tools::move_mouse::{self, MoveParams};
 use crate::tools::multi_edit::{self, MultiEditParams};
 use crate::tools::multi_select::{self, MultiSelectParams};
@@ -47,6 +48,20 @@ pub struct WindowsComputerUseServer;
 
 #[tool_router]
 impl WindowsComputerUseServer {
+    #[tool(
+        name = "InvokeElement",
+        description = "Invokes a structured UI element id from the most recent Snapshot using UI Automation semantics. Set fallback_to_click=true to explicitly allow a validated coordinate click when no semantic action is available."
+    )]
+    async fn invoke_element(
+        &self,
+        Parameters(params): Parameters<InvokeElementParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = tokio::task::spawn_blocking(move || invoke_element::invoke_element(params))
+            .await
+            .unwrap_or_else(|e| Err(format!("InvokeElement tool panicked: {e}")));
+        as_call_result(result)
+    }
+
     #[tool(
         name = "Wait",
         description = "Wait for a number of seconds (1-60) before returning."
@@ -189,7 +204,7 @@ impl WindowsComputerUseServer {
 
     #[tool(
         name = "Snapshot",
-        description = "Captures a desktop snapshot with cursor position, display/window summaries, and (by default) the UI accessibility tree — interactive element ids/labels, scrollable regions. Use use_vision=true to also include a screenshot image; use_annotation (default true) draws numbered bounding boxes on that image for the interactive elements. Prefer Screenshot when you only need a fast visual check; use Snapshot when you need element labels for Click/Type/Scroll/Move, or scrollable-region detection. Note: when the image is downscaled, multiply image coordinates by the reported scale to get real screen coordinates."
+        description = "Captures desktop state and a structured UI accessibility map. UI tree scanning defaults to the foreground window; use window for one fuzzy title match or scope=all for whole-desktop discovery. Element lines include generation-scoped ids and supported actions for InvokeElement. use_vision=true adds an annotated screenshot. timeout_ms (default 2000, range 100-30000) bounds the total UIA scan."
     )]
     async fn snapshot(
         &self,

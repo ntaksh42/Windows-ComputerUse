@@ -16,6 +16,10 @@ use windows::Win32::Foundation::{HWND, RECT, VARIANT_FALSE, VARIANT_TRUE};
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
 };
+use windows::Win32::System::Ole::{
+    SafeArrayAccessData, SafeArrayDestroy, SafeArrayGetLBound, SafeArrayGetUBound,
+    SafeArrayUnaccessData,
+};
 use windows::Win32::System::Variant::{VARIANT, VARIANT_0_0, VARIANT_0_0_0, VT_BOOL, VT_I4};
 use windows::Win32::UI::Accessibility::*;
 use windows::core::Result as WinResult;
@@ -24,6 +28,9 @@ use windows::core::Result as WinResult;
 /// Every field here is a `Cached*` read — no COM round trip per field.
 #[derive(Debug, Clone)]
 pub struct RawElement {
+    pub parent_index: Option<usize>,
+    pub runtime_id: Vec<i32>,
+    pub supported_actions: Vec<crate::state::SupportedAction>,
     pub control_type: i32,
     pub name: String,
     pub automation_id: String,
@@ -290,7 +297,41 @@ unsafe fn read_element(element: &IUIAutomationElement) -> RawElement {
             .filter(|percent| percent.is_finite() && *percent >= 0.0)
             .unwrap_or(0.0);
 
+        let runtime_id = element
+            .GetRuntimeId()
+            .ok()
+            .and_then(|array| runtime_id_from_safe_array(array).ok())
+            .unwrap_or_default();
+        let mut supported_actions = Vec::new();
+        if element
+            .GetCachedPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
+            .is_ok()
+        {
+            supported_actions.push(crate::state::SupportedAction::Invoke);
+        }
+        if element
+            .GetCachedPatternAs::<IUIAutomationSelectionItemPattern>(UIA_SelectionItemPatternId)
+            .is_ok()
+        {
+            supported_actions.push(crate::state::SupportedAction::SelectionItem);
+        }
+        if element
+            .GetCachedPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId)
+            .is_ok()
+        {
+            supported_actions.push(crate::state::SupportedAction::Toggle);
+        }
+        if element
+            .GetCachedPatternAs::<IUIAutomationExpandCollapsePattern>(UIA_ExpandCollapsePatternId)
+            .is_ok()
+        {
+            supported_actions.push(crate::state::SupportedAction::ExpandCollapse);
+        }
+
         RawElement {
+            parent_index: None,
+            runtime_id,
+            supported_actions,
             control_type,
             name,
             automation_id,
@@ -302,6 +343,32 @@ unsafe fn read_element(element: &IUIAutomationElement) -> RawElement {
             is_scrollable,
             vertical_scroll_percent,
         }
+    }
+}
+
+unsafe fn runtime_id_from_safe_array(
+    array: *mut windows::Win32::System::Com::SAFEARRAY,
+) -> WinResult<Vec<i32>> {
+    unsafe {
+        if array.is_null() {
+            return Ok(Vec::new());
+        }
+        let result = (|| {
+            let lower = SafeArrayGetLBound(array, 1)?;
+            let upper = SafeArrayGetUBound(array, 1)?;
+            if upper < lower {
+                return Ok(Vec::new());
+            }
+            let mut data = std::ptr::null_mut();
+            SafeArrayAccessData(array, &mut data)?;
+            let values =
+                std::slice::from_raw_parts(data.cast::<i32>(), (upper - lower + 1) as usize)
+                    .to_vec();
+            SafeArrayUnaccessData(array)?;
+            Ok(values)
+        })();
+        let _ = SafeArrayDestroy(array);
+        result
     }
 }
 
@@ -323,7 +390,7 @@ pub fn walk_window(
         let root = automation.ElementFromHandleBuildCache(hwnd, cache_request)?;
         let root_raw = read_element(&root);
         let mut elements = Vec::new();
-        if collect_cached_children(&root, reverse_children, &mut elements).is_err() {
+        if collect_cached_children(&root, None, reverse_children, &mut elements).is_err() {
             let array = root.FindAllBuildCache(TreeScope_Subtree, condition, cache_request)?;
             let len = array.Length()?.max(0) as usize;
             elements.reserve(len);
@@ -336,8 +403,110 @@ pub fn walk_window(
     }
 }
 
+pub fn invoke_matching_element(
+    identity: &crate::state::ElementNode,
+) -> Result<crate::state::SupportedAction, String> {
+    if identity.runtime_id.is_empty() {
+        return Err(format!(
+            "Element {} has no runtime identity",
+            identity.element_id
+        ));
+    }
+    ensure_com_initialized()?;
+    let automation = create_automation().map_err(|error| error.to_string())?;
+    let hwnd = HWND(identity.owner_handle as *mut _);
+    let matches = unsafe {
+        let root = automation
+            .ElementFromHandle(hwnd)
+            .map_err(|_| "Element owner window is closed".to_string())?;
+        let condition = automation
+            .CreateTrueCondition()
+            .map_err(|error| error.to_string())?;
+        let array = root
+            .FindAll(TreeScope_Subtree, &condition)
+            .map_err(|error| error.to_string())?;
+        let mut matches = Vec::new();
+        let mut guarded_fallbacks = Vec::new();
+        for index in 0..array.Length().map_err(|error| error.to_string())? {
+            let element = array.GetElement(index).map_err(|error| error.to_string())?;
+            let runtime_id = element.GetRuntimeId().map_err(|error| error.to_string())?;
+            let current =
+                runtime_id_from_safe_array(runtime_id).map_err(|error| error.to_string())?;
+            if current == identity.runtime_id {
+                matches.push(element);
+                continue;
+            }
+            if !identity.automation_id.is_empty()
+                && element
+                    .CurrentAutomationId()
+                    .is_ok_and(|value| value == identity.automation_id.as_str())
+                && element
+                    .CurrentControlType()
+                    .is_ok_and(|value| control_type_name(value.0) == identity.control_type)
+                && element.CurrentBoundingRectangle().is_ok_and(|rect| {
+                    (rect.left, rect.top, rect.right, rect.bottom) == identity.bounding_box
+                })
+            {
+                guarded_fallbacks.push(element);
+            }
+        }
+        if matches.is_empty() {
+            guarded_fallbacks
+        } else {
+            matches
+        }
+    };
+    if matches.len() != 1 {
+        return Err(format!(
+            "Element {} runtime identity matched {} elements",
+            identity.element_id,
+            matches.len()
+        ));
+    }
+    let element = &matches[0];
+    let action = crate::state::SupportedAction::highest_priority(&identity.supported_actions)
+        .ok_or_else(|| {
+            format!(
+                "Element {} has no supported semantic UIA action",
+                identity.element_id
+            )
+        })?;
+    unsafe {
+        let result: WinResult<()> = (|| {
+            match action {
+                crate::state::SupportedAction::Invoke => element
+                    .GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)?
+                    .Invoke()?,
+                crate::state::SupportedAction::SelectionItem => element
+                    .GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
+                        UIA_SelectionItemPatternId,
+                    )?
+                    .Select()?,
+                crate::state::SupportedAction::Toggle => element
+                    .GetCurrentPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId)?
+                    .Toggle()?,
+                crate::state::SupportedAction::ExpandCollapse => {
+                    let pattern = element
+                        .GetCurrentPatternAs::<IUIAutomationExpandCollapsePattern>(
+                            UIA_ExpandCollapsePatternId,
+                        )?;
+                    if pattern.CurrentExpandCollapseState()? == ExpandCollapseState_Collapsed {
+                        pattern.Expand()?;
+                    } else {
+                        pattern.Collapse()?;
+                    }
+                }
+            }
+            Ok(())
+        })();
+        result.map_err(|error| error.to_string())?;
+    }
+    Ok(action)
+}
+
 unsafe fn collect_cached_children(
     element: &IUIAutomationElement,
+    parent_index: Option<usize>,
     reverse_children: bool,
     output: &mut Vec<RawElement>,
 ) -> WinResult<()> {
@@ -351,8 +520,11 @@ unsafe fn collect_cached_children(
         };
         for index in indices {
             let child = array.GetElement(index)?;
-            output.push(read_element(&child));
-            collect_cached_children(&child, reverse_children, output)?;
+            let child_index = output.len();
+            let mut raw = read_element(&child);
+            raw.parent_index = parent_index;
+            output.push(raw);
+            collect_cached_children(&child, Some(child_index), reverse_children, output)?;
         }
         Ok(())
     }

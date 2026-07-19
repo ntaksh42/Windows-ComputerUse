@@ -177,6 +177,9 @@ pub(crate) fn display_list_text(displays: &[display::Display]) -> String {
 /// again."` per the tool's error contract.
 pub fn screenshot(params: &ScreenshotParams) -> Result<ScreenshotOutput, String> {
     let result = snapshot::capture(&SnapshotParams {
+        scope: None,
+        window: None,
+        timeout_ms: None,
         use_vision: Some(BoolOrString::Bool(true)),
         use_dom: Some(BoolOrString::Bool(false)),
         use_annotation: params.use_annotation.clone(),
