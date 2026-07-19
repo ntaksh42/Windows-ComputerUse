@@ -189,13 +189,13 @@ pub fn wait_for(params: WaitForParams) -> Result<String, String> {
     let timeout = params.timeout.unwrap_or(DEFAULT_TIMEOUT);
     if !(timeout > MIN_TIMEOUT && timeout <= MAX_TIMEOUT) {
         return Err(format!(
-            "timeout must be greater than {MIN_TIMEOUT} and at most {MAX_TIMEOUT} seconds, got {timeout}"
+            "timeout must be between {MIN_TIMEOUT} (exclusive) and {MAX_TIMEOUT} seconds, got {timeout}"
         ));
     }
     let interval = params.interval.unwrap_or(DEFAULT_INTERVAL);
     if !(interval > MIN_INTERVAL && interval <= MAX_INTERVAL) {
         return Err(format!(
-            "interval must be greater than {MIN_INTERVAL} and at most {MAX_INTERVAL} seconds, got {interval}"
+            "interval must be between {MIN_INTERVAL} (exclusive) and {MAX_INTERVAL} seconds, got {interval}"
         ));
     }
 

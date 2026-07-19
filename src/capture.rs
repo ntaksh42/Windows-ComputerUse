@@ -271,6 +271,47 @@ unsafe fn capture_rect_dxgi(rect: RECT) -> Result<image::RgbaImage, String> {
     }
 }
 
+/// Verifies that Desktop Duplication can be initialized for at least one
+/// attached output without acquiring a frame.
+pub fn dxgi_available() -> Result<(), String> {
+    unsafe {
+        let factory: IDXGIFactory1 =
+            CreateDXGIFactory1().map_err(|e| format!("CreateDXGIFactory1 failed: {e}"))?;
+        let mut last_error = None;
+        for adapter_index in 0.. {
+            let Ok(adapter) = factory.EnumAdapters1(adapter_index) else {
+                break;
+            };
+            for output_index in 0.. {
+                let Ok(output) = adapter.EnumOutputs(output_index) else {
+                    break;
+                };
+                let output: IDXGIOutput1 = match output.cast() {
+                    Ok(output) => output,
+                    Err(error) => {
+                        last_error = Some(error.to_string());
+                        continue;
+                    }
+                };
+                if !output
+                    .GetDesc()
+                    .map_err(|e| format!("GetDesc failed: {e}"))?
+                    .AttachedToDesktop
+                    .as_bool()
+                {
+                    continue;
+                }
+                let (device, _) = create_device(&adapter)?;
+                match output.DuplicateOutput(&device) {
+                    Ok(_) => return Ok(()),
+                    Err(error) => last_error = Some(format!("DuplicateOutput failed: {error}")),
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| "DXGI found no attached output".to_string()))
+    }
+}
+
 /// Captures `rect` via GDI `BitBlt` + `GetDIBits`, returning RGBA bytes.
 unsafe fn capture_rect_gdi(rect: RECT, width: i32, height: i32) -> Result<Vec<u8>, String> {
     unsafe {

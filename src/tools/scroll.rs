@@ -67,6 +67,8 @@ pub struct ScrollParams {
     pub direction: Option<ScrollDirection>,
     /// Number of wheel notches. Defaults to 1.
     pub wheel_times: Option<i64>,
+    /// Optional keyboard modifier held atomically during scrolling.
+    pub modifier: Option<String>,
 }
 
 /// Scrolls at the resolved location (or the current cursor position) and
@@ -76,10 +78,11 @@ pub fn scroll(params: ScrollParams) -> Result<String, String> {
     let point = resolve_point_optional(params.loc, params.label)?;
     let scroll_type = params.scroll_type.unwrap_or(ScrollType::Vertical);
     let direction = params.direction.unwrap_or(ScrollDirection::Down);
-    let wheel_times = match i32::try_from(params.wheel_times.unwrap_or(1)) {
-        Ok(value) if value >= 0 => value,
-        _ => return Ok("wheel_times must be a non-negative 32-bit integer.".to_string()),
-    };
+    let wheel_times = params.wheel_times.unwrap_or(1);
+    if !(0..=100).contains(&wheel_times) {
+        return Err("wheel_times must be between 0 and 100".to_string());
+    }
+    let wheel_times = wheel_times as i32;
 
     if scroll_type == ScrollType::Vertical
         && !matches!(direction, ScrollDirection::Up | ScrollDirection::Down)
@@ -91,6 +94,8 @@ pub fn scroll(params: ScrollParams) -> Result<String, String> {
     {
         return Ok(r#"Invalid direction. Use "left" or "right"."#.to_string());
     }
+
+    let modifier = input_sim::ModifierGuard::press(params.modifier.as_deref())?;
 
     if let Some((x, y)) = point {
         input_sim::move_smooth(x, y, 10.0, MOVE_WAIT);
@@ -105,19 +110,33 @@ pub fn scroll(params: ScrollParams) -> Result<String, String> {
         }
         (ScrollType::Vertical, _) => unreachable!("direction validated above"),
         (ScrollType::Horizontal, ScrollDirection::Left) => {
-            input_sim::key_down(VK_SHIFT.0);
+            let shift_already_held = modifier
+                .as_ref()
+                .is_some_and(|guard| guard.virtual_key() == VK_SHIFT.0);
+            if !shift_already_held {
+                input_sim::key_down(VK_SHIFT.0);
+            }
             std::thread::sleep(SHIFT_KEY_WAIT);
             input_sim::wheel(wheel_times, NOTCH_INTERVAL, WHEEL_TRAILING_WAIT);
             std::thread::sleep(NOTCH_INTERVAL);
-            input_sim::key_up(VK_SHIFT.0);
+            if !shift_already_held {
+                input_sim::key_up(VK_SHIFT.0);
+            }
             std::thread::sleep(SHIFT_KEY_WAIT);
         }
         (ScrollType::Horizontal, ScrollDirection::Right) => {
-            input_sim::key_down(VK_SHIFT.0);
+            let shift_already_held = modifier
+                .as_ref()
+                .is_some_and(|guard| guard.virtual_key() == VK_SHIFT.0);
+            if !shift_already_held {
+                input_sim::key_down(VK_SHIFT.0);
+            }
             std::thread::sleep(SHIFT_KEY_WAIT);
             input_sim::wheel(-wheel_times, NOTCH_INTERVAL, WHEEL_TRAILING_WAIT);
             std::thread::sleep(NOTCH_INTERVAL);
-            input_sim::key_up(VK_SHIFT.0);
+            if !shift_already_held {
+                input_sim::key_up(VK_SHIFT.0);
+            }
             std::thread::sleep(SHIFT_KEY_WAIT);
         }
         (ScrollType::Horizontal, _) => unreachable!("direction validated above"),
@@ -129,4 +148,32 @@ pub fn scroll(params: ScrollParams) -> Result<String, String> {
         scroll_type.label(),
         direction.label()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params(wheel_times: i64) -> ScrollParams {
+        ScrollParams {
+            loc: None,
+            label: None,
+            scroll_type: None,
+            direction: None,
+            wheel_times: Some(wheel_times),
+            modifier: None,
+        }
+    }
+
+    #[test]
+    fn wheel_times_is_limited_to_one_hundred() {
+        assert_eq!(
+            scroll(params(-1)).unwrap_err(),
+            "wheel_times must be between 0 and 100"
+        );
+        assert_eq!(
+            scroll(params(101)).unwrap_err(),
+            "wheel_times must be between 0 and 100"
+        );
+    }
 }

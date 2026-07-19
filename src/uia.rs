@@ -11,6 +11,7 @@
 
 use std::cell::Cell;
 use std::mem::ManuallyDrop;
+use std::time::Duration;
 
 use windows::Win32::Foundation::{HWND, RECT, VARIANT_FALSE, VARIANT_TRUE};
 use windows::Win32::System::Com::{
@@ -403,17 +404,10 @@ pub fn walk_window(
     }
 }
 
-pub fn invoke_matching_element(
+fn find_matching_element(
+    automation: &IUIAutomation,
     identity: &crate::state::ElementNode,
-) -> Result<crate::state::SupportedAction, String> {
-    if identity.runtime_id.is_empty() {
-        return Err(format!(
-            "Element {} has no runtime identity",
-            identity.element_id
-        ));
-    }
-    ensure_com_initialized()?;
-    let automation = create_automation().map_err(|error| error.to_string())?;
+) -> Result<IUIAutomationElement, String> {
     let hwnd = HWND(identity.owner_handle as *mut _);
     let matches = unsafe {
         let root = automation
@@ -463,7 +457,38 @@ pub fn invoke_matching_element(
             matches.len()
         ));
     }
-    let element = &matches[0];
+    Ok(matches[0].clone())
+}
+
+pub fn invoke_matching_element(
+    identity: &crate::state::ElementNode,
+) -> Result<crate::state::SupportedAction, String> {
+    if identity.runtime_id.is_empty() {
+        return Err(format!(
+            "Element {} has no runtime identity",
+            identity.element_id
+        ));
+    }
+    ensure_com_initialized()?;
+    let automation = create_automation().map_err(|error| error.to_string())?;
+    let mut element = find_matching_element(&automation, identity)?;
+    if unsafe { element.CurrentIsOffscreen() }
+        .map_err(|error| error.to_string())?
+        .as_bool()
+    {
+        let scroll_item = unsafe {
+            element.GetCurrentPatternAs::<IUIAutomationScrollItemPattern>(UIA_ScrollItemPatternId)
+        }
+        .map_err(|_| {
+            format!(
+                "Element {} is offscreen and does not support ScrollItemPattern",
+                identity.element_id
+            )
+        })?;
+        unsafe { scroll_item.ScrollIntoView() }.map_err(|error| error.to_string())?;
+        std::thread::sleep(Duration::from_millis(100));
+        element = find_matching_element(&automation, identity)?;
+    }
     let action = crate::state::SupportedAction::highest_priority(&identity.supported_actions)
         .ok_or_else(|| {
             format!(
@@ -502,6 +527,68 @@ pub fn invoke_matching_element(
         result.map_err(|error| error.to_string())?;
     }
     Ok(action)
+}
+
+pub fn caret_info() -> Result<String, String> {
+    ensure_com_initialized()?;
+    let automation = create_automation().map_err(|error| error.to_string())?;
+    unsafe {
+        let element = automation
+            .GetFocusedElement()
+            .map_err(|error| format!("Failed to get focused element: {error}"))?;
+        let name = element
+            .CurrentName()
+            .map(|name| name.to_string())
+            .unwrap_or_default();
+        let pattern = element
+            .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
+            .map_err(|_| "Focused element does not support TextPattern".to_string())?;
+        let selections = pattern
+            .GetSelection()
+            .map_err(|error| format!("Failed to get text selection: {error}"))?;
+        if selections.Length().map_err(|error| error.to_string())? == 0 {
+            return Err("Focused text element returned no selection range".to_string());
+        }
+        let range = selections
+            .GetElement(0)
+            .map_err(|error| error.to_string())?;
+        let collapsed = range
+            .CompareEndpoints(
+                TextPatternRangeEndpoint_Start,
+                &range,
+                TextPatternRangeEndpoint_End,
+            )
+            .map_err(|error| error.to_string())?
+            == 0;
+        if collapsed {
+            let document = pattern.DocumentRange().map_err(|error| error.to_string())?;
+            document
+                .MoveEndpointByRange(
+                    TextPatternRangeEndpoint_End,
+                    &range,
+                    TextPatternRangeEndpoint_Start,
+                )
+                .map_err(|error| error.to_string())?;
+            let prefix = document
+                .GetText(-1)
+                .map_err(|error| error.to_string())?
+                .to_string();
+            return Ok(format!(
+                "Caret position: {} in {:?}",
+                prefix.chars().count(),
+                name
+            ));
+        }
+
+        let text = range
+            .GetText(200)
+            .map_err(|error| error.to_string())?
+            .to_string();
+        Ok(format!(
+            "Selected text: {}",
+            text.chars().take(200).collect::<String>()
+        ))
+    }
 }
 
 unsafe fn collect_cached_children(

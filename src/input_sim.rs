@@ -20,7 +20,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE,
     MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
     MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT,
-    SendInput, VIRTUAL_KEY, VK_RETURN, VK_TAB,
+    SendInput, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RETURN, VK_SHIFT, VK_TAB,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
@@ -35,6 +35,36 @@ pub enum MouseButton {
     Left,
     Right,
     Middle,
+}
+
+/// A held keyboard modifier that is always released when dropped.
+pub struct ModifierGuard(u16);
+
+impl ModifierGuard {
+    pub fn press(modifier: Option<&str>) -> Result<Option<Self>, String> {
+        let Some(modifier) = modifier else {
+            return Ok(None);
+        };
+        let vk = match modifier.trim().to_ascii_lowercase().as_str() {
+            "shift" => VK_SHIFT.0,
+            "ctrl" => VK_CONTROL.0,
+            "alt" => VK_MENU.0,
+            "win" => VK_LWIN.0,
+            _ => return Err("modifier must be one of: shift, ctrl, alt, win".to_string()),
+        };
+        key_down(vk);
+        Ok(Some(Self(vk)))
+    }
+
+    pub fn virtual_key(&self) -> u16 {
+        self.0
+    }
+}
+
+impl Drop for ModifierGuard {
+    fn drop(&mut self) {
+        key_up(self.0);
+    }
 }
 
 /// Current cursor position in screen coordinates.

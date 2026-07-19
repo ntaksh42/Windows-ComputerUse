@@ -12,6 +12,7 @@ mod params;
 mod powershell;
 mod server;
 mod state;
+mod tool_policy;
 mod tools;
 mod uia;
 mod vdm;

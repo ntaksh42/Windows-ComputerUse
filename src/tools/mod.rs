@@ -5,9 +5,12 @@
 //! `server.rs` wires them up as `#[tool]` methods.
 
 pub mod app;
+pub mod caret_info;
 pub mod click;
 pub mod clipboard;
+pub mod cursor_position;
 pub mod display_inventory;
+pub mod doctor;
 pub mod filesystem;
 pub mod invoke_element;
 pub mod move_mouse;

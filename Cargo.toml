@@ -15,6 +15,7 @@ filetime = "0.2.26"
 htmd = "0.5.4"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "http2", "gzip", "json", "charset"] }
+regex = "1.12.3"
 rmcp = { version = "2.2.0", features = ["server", "macros", "transport-io", "schemars"] }
 schemars = "1.2.1"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -36,6 +37,7 @@ windows = { version = "0.62.2", features = [
     "Win32_System_Console",
     "Win32_System_DataExchange",
     "Win32_System_Environment",
+    "Win32_System_LibraryLoader",
     "Win32_System_Memory",
     "Win32_System_Ole",
     "Win32_System_SystemServices",

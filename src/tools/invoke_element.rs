@@ -59,6 +59,7 @@ pub fn invoke_element(params: InvokeElementParams) -> Result<String, String> {
         label: None,
         button: Some(ClickButton::Left),
         clicks: Some(1),
+        modifier: None,
     })?;
     Ok(format!("Clicked element {} fallback.", element.element_id))
 }

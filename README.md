@@ -40,6 +40,25 @@ coordinates.
 Prefer `WaitFor` after UI actions so execution resumes as soon as the expected
 window or element appears. Fixed `Wait` durations always add their full delay.
 
+For long-running sessions, batch-thin screenshot history on the client side to
+keep image context and memory usage bounded.
+
+## Configuration
+
+| Environment variable | Description |
+| --- | --- |
+| `WINDOWS_MCP_ALLOW_SENSITIVE_FILES=1` | Allows FileSystem access to sensitive names such as `.env*`, `id_rsa*`, `*.pem`, `*.key`, `*.pfx`, and `credentials*`. Access is denied by default. |
+| `WINDOWS_MCP_DISABLED_TOOLS` | Comma-separated tool names to disable, matched case-insensitively. |
+| `WINDOWS_MCP_AUDIT_LOG` | JSONL audit-log path. Each call records only its timestamp, tool name, and success status. |
+
+## Troubleshooting
+
+| Symptom | Likely cause | Action |
+| --- | --- | --- |
+| Clicks land away from the target | DPI scaling, coordinates copied from a downscaled screenshot, or a monitor positioned at negative desktop coordinates | Use `DisplayInventory` to inspect display bounds and scaling. When a screenshot reports a coordinate multiplier, convert image coordinates back to screen coordinates before clicking. Keep negative coordinates for monitors left of or above the primary display. |
+| A UI Automation element is not found | The target is outside the current Snapshot scope, has not loaded yet, or does not expose UIA metadata | Use `WaitFor`, target the window explicitly, or retry Snapshot with `scope="all"`. Coordinate clicking remains available for controls without UIA support. |
+| WaitFor or Snapshot times out | The application is slow or the scan scope is too broad | Increase `timeout`/`timeout_ms` within the documented limit, increase the WaitFor `interval`, or narrow Snapshot to one window. |
+
 Enable Snapshot timing diagnostics before starting the server:
 
 ```powershell
