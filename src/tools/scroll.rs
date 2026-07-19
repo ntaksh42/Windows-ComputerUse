@@ -78,10 +78,11 @@ pub fn scroll(params: ScrollParams) -> Result<String, String> {
     let point = resolve_point_optional(params.loc, params.label)?;
     let scroll_type = params.scroll_type.unwrap_or(ScrollType::Vertical);
     let direction = params.direction.unwrap_or(ScrollDirection::Down);
-    let wheel_times = match i32::try_from(params.wheel_times.unwrap_or(1)) {
-        Ok(value) if value >= 0 => value,
-        _ => return Ok("wheel_times must be a non-negative 32-bit integer.".to_string()),
-    };
+    let wheel_times = params.wheel_times.unwrap_or(1);
+    if !(0..=100).contains(&wheel_times) {
+        return Err("wheel_times must be between 0 and 100".to_string());
+    }
+    let wheel_times = wheel_times as i32;
 
     if scroll_type == ScrollType::Vertical
         && !matches!(direction, ScrollDirection::Up | ScrollDirection::Down)
@@ -147,4 +148,32 @@ pub fn scroll(params: ScrollParams) -> Result<String, String> {
         scroll_type.label(),
         direction.label()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params(wheel_times: i64) -> ScrollParams {
+        ScrollParams {
+            loc: None,
+            label: None,
+            scroll_type: None,
+            direction: None,
+            wheel_times: Some(wheel_times),
+            modifier: None,
+        }
+    }
+
+    #[test]
+    fn wheel_times_is_limited_to_one_hundred() {
+        assert_eq!(
+            scroll(params(-1)).unwrap_err(),
+            "wheel_times must be between 0 and 100"
+        );
+        assert_eq!(
+            scroll(params(101)).unwrap_err(),
+            "wheel_times must be between 0 and 100"
+        );
+    }
 }
