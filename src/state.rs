@@ -40,7 +40,6 @@ impl SupportedAction {
 pub struct ElementNode {
     pub element_id: u64,
     pub parent_id: Option<u64>,
-    pub generation: u32,
     pub owner_handle: isize,
     pub runtime_id: Vec<i32>,
     pub automation_id: String,
@@ -166,7 +165,6 @@ mod tests {
         ElementNode {
             element_id: 0,
             parent_id: None,
-            generation: 0,
             owner_handle: 0,
             runtime_id: Vec::new(),
             automation_id: String::new(),
@@ -237,7 +235,6 @@ mod tests {
         let first_generation = next_generation();
         let mut first = node(10, 20);
         first.element_id = element_id(first_generation, 0);
-        first.generation = first_generation;
         set_state(DesktopState {
             generation: first_generation,
             interactive_nodes: vec![first.clone()],

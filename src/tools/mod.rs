@@ -9,6 +9,7 @@ pub mod click;
 pub mod clipboard;
 pub mod display_inventory;
 pub mod filesystem;
+pub mod invoke_element;
 pub mod move_mouse;
 pub mod multi_edit;
 pub mod multi_select;

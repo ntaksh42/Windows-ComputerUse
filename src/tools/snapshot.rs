@@ -299,7 +299,6 @@ fn raw_to_node(
         parent_id: el
             .parent_index
             .map(|index| state::element_id(generation, window_element_base + index)),
-        generation,
         owner_handle,
         runtime_id: el.runtime_id.clone(),
         automation_id: el.automation_id.clone(),
@@ -829,7 +828,6 @@ pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String>
                     let node = state::ElementNode {
                         element_id: 0,
                         parent_id: None,
-                        generation,
                         owner_handle: win.handle,
                         runtime_id: Vec::new(),
                         automation_id: String::new(),
@@ -1215,7 +1213,6 @@ mod tests {
         let node = state::ElementNode {
             element_id: state::element_id(7, 3),
             parent_id: Some(state::element_id(7, 1)),
-            generation: 7,
             owner_handle: 0,
             runtime_id: Vec::new(),
             automation_id: String::new(),
@@ -1241,7 +1238,6 @@ mod tests {
         let node = state::ElementNode {
             element_id: 0,
             parent_id: None,
-            generation: 0,
             owner_handle: 0,
             runtime_id: Vec::new(),
             automation_id: String::new(),

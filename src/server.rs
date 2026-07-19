@@ -15,6 +15,7 @@ use crate::tools::click::{self, ClickParams};
 use crate::tools::clipboard::{self, ClipboardParams};
 use crate::tools::display_inventory::{self, DisplayInventoryParams};
 use crate::tools::filesystem::{self, FileSystemParams};
+use crate::tools::invoke_element::{self, InvokeElementParams};
 use crate::tools::move_mouse::{self, MoveParams};
 use crate::tools::multi_edit::{self, MultiEditParams};
 use crate::tools::multi_select::{self, MultiSelectParams};
@@ -47,6 +48,20 @@ pub struct WindowsComputerUseServer;
 
 #[tool_router]
 impl WindowsComputerUseServer {
+    #[tool(
+        name = "InvokeElement",
+        description = "Invokes a structured UI element id from the most recent Snapshot using UI Automation semantics. Set fallback_to_click=true to explicitly allow a validated coordinate click when no semantic action is available."
+    )]
+    async fn invoke_element(
+        &self,
+        Parameters(params): Parameters<InvokeElementParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = tokio::task::spawn_blocking(move || invoke_element::invoke_element(params))
+            .await
+            .unwrap_or_else(|e| Err(format!("InvokeElement tool panicked: {e}")));
+        as_call_result(result)
+    }
+
     #[tool(
         name = "Wait",
         description = "Wait for a number of seconds (1-60) before returning."

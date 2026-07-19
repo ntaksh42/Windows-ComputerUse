@@ -403,6 +403,107 @@ pub fn walk_window(
     }
 }
 
+pub fn invoke_matching_element(
+    identity: &crate::state::ElementNode,
+) -> Result<crate::state::SupportedAction, String> {
+    if identity.runtime_id.is_empty() {
+        return Err(format!(
+            "Element {} has no runtime identity",
+            identity.element_id
+        ));
+    }
+    ensure_com_initialized()?;
+    let automation = create_automation().map_err(|error| error.to_string())?;
+    let hwnd = HWND(identity.owner_handle as *mut _);
+    let matches = unsafe {
+        let root = automation
+            .ElementFromHandle(hwnd)
+            .map_err(|_| "Element owner window is closed".to_string())?;
+        let condition = automation
+            .CreateTrueCondition()
+            .map_err(|error| error.to_string())?;
+        let array = root
+            .FindAll(TreeScope_Subtree, &condition)
+            .map_err(|error| error.to_string())?;
+        let mut matches = Vec::new();
+        let mut guarded_fallbacks = Vec::new();
+        for index in 0..array.Length().map_err(|error| error.to_string())? {
+            let element = array.GetElement(index).map_err(|error| error.to_string())?;
+            let runtime_id = element.GetRuntimeId().map_err(|error| error.to_string())?;
+            let current =
+                runtime_id_from_safe_array(runtime_id).map_err(|error| error.to_string())?;
+            if current == identity.runtime_id {
+                matches.push(element);
+                continue;
+            }
+            if !identity.automation_id.is_empty()
+                && element
+                    .CurrentAutomationId()
+                    .is_ok_and(|value| value == identity.automation_id.as_str())
+                && element
+                    .CurrentControlType()
+                    .is_ok_and(|value| control_type_name(value.0) == identity.control_type)
+                && element.CurrentBoundingRectangle().is_ok_and(|rect| {
+                    (rect.left, rect.top, rect.right, rect.bottom) == identity.bounding_box
+                })
+            {
+                guarded_fallbacks.push(element);
+            }
+        }
+        if matches.is_empty() {
+            guarded_fallbacks
+        } else {
+            matches
+        }
+    };
+    if matches.len() != 1 {
+        return Err(format!(
+            "Element {} runtime identity matched {} elements",
+            identity.element_id,
+            matches.len()
+        ));
+    }
+    let element = &matches[0];
+    let action = crate::state::SupportedAction::highest_priority(&identity.supported_actions)
+        .ok_or_else(|| {
+            format!(
+                "Element {} has no supported semantic UIA action",
+                identity.element_id
+            )
+        })?;
+    unsafe {
+        let result: WinResult<()> = (|| {
+            match action {
+                crate::state::SupportedAction::Invoke => element
+                    .GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)?
+                    .Invoke()?,
+                crate::state::SupportedAction::SelectionItem => element
+                    .GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
+                        UIA_SelectionItemPatternId,
+                    )?
+                    .Select()?,
+                crate::state::SupportedAction::Toggle => element
+                    .GetCurrentPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId)?
+                    .Toggle()?,
+                crate::state::SupportedAction::ExpandCollapse => {
+                    let pattern = element
+                        .GetCurrentPatternAs::<IUIAutomationExpandCollapsePattern>(
+                            UIA_ExpandCollapsePatternId,
+                        )?;
+                    if pattern.CurrentExpandCollapseState()? == ExpandCollapseState_Collapsed {
+                        pattern.Expand()?;
+                    } else {
+                        pattern.Collapse()?;
+                    }
+                }
+            }
+            Ok(())
+        })();
+        result.map_err(|error| error.to_string())?;
+    }
+    Ok(action)
+}
+
 unsafe fn collect_cached_children(
     element: &IUIAutomationElement,
     parent_index: Option<usize>,
