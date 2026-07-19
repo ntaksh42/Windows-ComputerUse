@@ -20,7 +20,7 @@ Fast capture: text summary + PNG. No UI tree.
 
 | param | type | default | notes |
 |---|---|---|---|
-| use_annotation | bool | false | |
+| use_annotation | bool | false | currently a no-op — accepted but ignored (unlike Snapshot's) |
 | width_reference_line / height_reference_line | int? | null | grid lines; both required to take effect |
 | display | [int]? | null | restrict capture to display indices (see DisplayInventory) |
 
@@ -42,7 +42,7 @@ UI accessibility tree with element ids and semantic actions.
 | display | [int]? | null | |
 | width_reference_line / height_reference_line | int? | null | |
 
-UI Tree lines look like `(x,y) controltype "name" [action: click]` with element ids. Ids are generation-scoped: a new Snapshot invalidates all previous ids.
+UI Tree lines look like `(x,y) controltype "name" [action: click]` with element ids. Ids are generation-scoped: a new Snapshot invalidates all previous ids. A stale `element_id` is rejected with an error, but a stale `label` is not detected — it silently indexes into the newest element list (see Click).
 
 ### DisplayInventory
 
@@ -64,7 +64,7 @@ Re-resolves the element by RuntimeId within its owning window and executes the f
 | param | type | default | notes |
 |---|---|---|---|
 | loc | [x,y]? | null | one of loc/label required |
-| label | int? | null | element index from latest Snapshot |
+| label | int? | null | element index from latest Snapshot; no staleness check — an old label silently targets whatever now holds that index |
 | button | left \| right \| middle | left | |
 | clicks | int | 1 | 0=hover, 1=single, 2=double |
 
@@ -78,7 +78,7 @@ Re-resolves the element by RuntimeId within its owning window and executes the f
 | caret_position | start \| idle \| end | idle | |
 | press_enter | bool | false | |
 
-Text of 20+ chars without `\n`/`\t` is pasted via clipboard (original clipboard restored); otherwise sent per keystroke. `\n` becomes Enter, `\t` becomes Tab.
+Text of 20+ chars containing none of `\n`, `\t`, `{`, `}` is pasted via clipboard (original clipboard restored); otherwise sent per keystroke. `\n` becomes Enter, `\t` becomes Tab.
 
 ### Scroll
 
@@ -136,8 +136,8 @@ Applies Type with clear=true to each field in order.
 | condition | string | required | text_exists / active_window / element_exists / element_enabled / focused_element (aliases: text / window / element / enabled / focused) |
 | text | string? | | target for text/element conditions (casefold substring) |
 | window_name | string? | | target for active_window |
-| timeout | float | 10.0 | max 120 |
-| interval | float | 0.25 | max 5 |
+| timeout | float | 10.0 | 0 < timeout ≤ 120 |
+| interval | float | 0.25 | 0 < interval ≤ 5 |
 | use_dom | bool | false | |
 
 Polls without screenshots; returns as soon as the condition holds. Timeout returns an error result.
@@ -178,7 +178,7 @@ Response is always `Response: {output}\nStatus Code: {code}`. Runs with -NoProfi
 | destination | string? | | copy/move |
 | content | string? | | write |
 | pattern | string? | | search (glob, required) / list (optional filter) |
-| recursive | bool | false | required to delete non-empty dirs |
+| recursive | bool | false | delete: required for non-empty dirs; list/search: recurse into subdirectories |
 | append | bool | false | write |
 | overwrite | bool | false | copy/move onto existing target |
 | offset / limit | int? | null | read line range; offset is 1-based |
@@ -208,7 +208,7 @@ set creates missing keys automatically.
 | pid | int? | | kill: takes precedence over name |
 | sort_by | memory \| cpu \| name | memory | list |
 | limit | int | 20 | list |
-| force | bool | false | kill vs graceful terminate |
+| force | bool | false | changes response wording only — Windows has no graceful terminate; both paths force-kill |
 
 ### Clipboard
 

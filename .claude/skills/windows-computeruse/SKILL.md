@@ -1,6 +1,6 @@
 ---
 name: windows-computeruse
-description: Operate the Windows desktop via the windows-computeruse MCP server. Use for Windows UI automation - launch apps, click, type, read screens, await UI state, manage files/registry/processes/clipboard.
+description: Operate the Windows desktop via the windows-computeruse MCP server. Use whenever a task touches the Windows UI or local system - launching apps, clicking, typing, reading the screen, waiting for windows, managing files/registry/processes/clipboard - even when the user does not name the server.
 ---
 
 # Windows-ComputerUse MCP Server
@@ -22,7 +22,7 @@ After acting, re-observe (`Screenshot` is usually enough) to verify the effect b
 
 ## Rules that prevent common failures
 
-- **Element ids are generation-scoped.** Every new Snapshot invalidates all ids from previous Snapshots. Never reuse an `element_id` or `label` after taking a new Snapshot — re-read them from the latest output.
+- **Element ids and labels are generation-scoped — and fail differently when stale.** A stale `element_id` from an older Snapshot errors out safely ("Element id N is stale"). A stale `label` does not: it silently indexes into the newest Snapshot's element list and may act on a completely different control. Re-read both from the latest Snapshot output; never carry them across Snapshots.
 - **Labels require a prior Snapshot.** `Click`/`Type` with `label` fails with "Desktop state is empty" until Snapshot has run at least once.
 - **Scale screenshot coordinates.** Screenshots may be downscaled (1920x1080 cap x `WINDOWS_MCP_SCREENSHOT_SCALE`). When the output reports an Original Size / Coordinate Scale, multiply image coordinates by the stated ratio before passing them to Click/Move/Type.
 - **UI state changes after every action.** Menus close, dialogs open, focus moves. Do not chain multiple coordinate-based actions from one old observation.
@@ -60,7 +60,7 @@ Screenshot()                        # verify result
 
 Fill a form with several fields: `MultiEdit(labels=[[label, text], ...])` instead of repeated Type calls. Select multiple files/items: `MultiSelect`.
 
-Text entry details for `Type`: `clear=true` replaces existing content, `press_enter=true` submits, `caret_position` is `start`/`end`/`idle`. Text of 20+ characters without `\n`/`\t` is pasted via clipboard automatically (fast); shorter or control-character text is sent keystroke by keystroke.
+Text entry details for `Type`: `clear=true` replaces existing content, `press_enter=true` submits, `caret_position` is `start`/`end`/`idle`. Text of 20+ characters containing none of `\n`, `\t`, `{`, `}` is pasted via clipboard automatically (fast); anything else is sent keystroke by keystroke.
 
 ## Full parameter reference
 
