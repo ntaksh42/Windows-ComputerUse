@@ -12,6 +12,7 @@ use rmcp::{
 
 use crate::tool_policy::ToolCall;
 use crate::tools::app::{self, AppParams};
+use crate::tools::caret_info::{self, CaretInfoParams};
 use crate::tools::click::{self, ClickParams};
 use crate::tools::clipboard::{self, ClipboardParams};
 use crate::tools::cursor_position::{self, CursorPositionParams};
@@ -145,6 +146,22 @@ impl WindowsComputerUseServer {
         Ok(CallToolResult::success(vec![ContentBlock::text(
             cursor_position::cursor_position(),
         )]))
+    }
+
+    #[tool(
+        name = "CaretInfo",
+        description = "Returns the caret position or up to 200 characters of selected text from the focused UI Automation text element.",
+        annotations(read_only_hint = true, destructive_hint = false)
+    )]
+    async fn caret_info(
+        &self,
+        Parameters(CaretInfoParams {}): Parameters<CaretInfoParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let audit = begin_tool!("CaretInfo");
+        let result = tokio::task::spawn_blocking(caret_info::caret_info)
+            .await
+            .unwrap_or_else(|error| Err(format!("CaretInfo tool panicked: {error}")));
+        as_call_result(result, audit)
     }
 
     #[tool(
