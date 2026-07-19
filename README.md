@@ -17,8 +17,9 @@ cargo run --release
 Use the release profile for desktop automation. Debug builds are substantially
 slower when resizing and encoding 4K screenshots.
 
-`Snapshot` scans only the foreground window by default. Use `window` to target
-one titled window or `scope="all"` for whole-desktop discovery. Returned UI
+`Snapshot` scans only the foreground application by default, including its
+same-process popup windows. Use `window` to target one titled application or
+`scope="all"` for whole-desktop discovery. Returned UI
 tree lines include generation-scoped element ids and supported semantic
 actions; pass an id to `InvokeElement` to activate the control without screen
 coordinates.

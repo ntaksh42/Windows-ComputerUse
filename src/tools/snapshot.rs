@@ -93,16 +93,30 @@ fn select_scan_targets<'a>(
         {
             return Err(format!("Window query is ambiguous: {query}"));
         }
-        return Ok(vec![*best]);
+        let mut application_windows = vec![*best];
+        application_windows.extend(
+            windows
+                .iter()
+                .filter(|candidate| candidate.handle != best.handle && candidate.pid == best.pid),
+        );
+        return Ok(application_windows);
     }
 
     let foreground_handle = foreground.map(|window| window.handle);
     let foreground_window = foreground_handle
         .and_then(|handle| windows.iter().find(|candidate| candidate.handle == handle));
     match options.scope {
-        SnapshotScope::Foreground => foreground_window
-            .map(|window| vec![window])
-            .ok_or_else(|| "No foreground window is available for UI tree scanning".to_string()),
+        SnapshotScope::Foreground => {
+            let foreground_window = foreground_window.ok_or_else(|| {
+                "No foreground window is available for UI tree scanning".to_string()
+            })?;
+            let mut application_windows = vec![foreground_window];
+            application_windows.extend(windows.iter().filter(|candidate| {
+                candidate.handle != foreground_window.handle
+                    && candidate.pid == foreground_window.pid
+            }));
+            Ok(application_windows)
+        }
         SnapshotScope::All => {
             let mut ordered = Vec::with_capacity(windows.len());
             if let Some(window) = foreground_window {
@@ -1175,6 +1189,29 @@ mod tests {
         assert_eq!(
             selected.iter().map(|w| w.handle).collect::<Vec<_>>(),
             vec![2]
+        );
+    }
+
+    #[test]
+    fn explicit_window_includes_related_popup_from_the_same_process() {
+        let windows = vec![
+            snapshot_window(1, "Claude"),
+            window::SnapshotWindow {
+                handle: 2,
+                title: String::new(),
+                class_name: "Popup".to_string(),
+                pid: 1,
+            },
+            snapshot_window(3, "Edge"),
+        ];
+        let options = ScanOptions::resolve(None, Some("Claude".to_string()), None).unwrap();
+        let selected = select_scan_targets(&options, None, &windows).unwrap();
+        assert_eq!(
+            selected
+                .iter()
+                .map(|window| window.handle)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
         );
     }
 

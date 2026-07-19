@@ -9,7 +9,7 @@ Reduce request-to-action latency and navigation errors by making Snapshot inspec
 `Snapshot` gains three optional parameters:
 
 - `scope`: `foreground` or `all`; defaults to `foreground`.
-- `window`: a fuzzy window-title query. When present, Snapshot scans only the uniquely best matching window.
+- `window`: a fuzzy window-title query. When present, Snapshot scans the uniquely best matching window and same-process popup windows belonging to that application.
 - `timeout_ms`: total UIA scan deadline in milliseconds; defaults to 2000 and must be between 100 and 30000.
 
 `window` and `scope=all` are mutually exclusive. `scope=all` preserves the current whole-desktop inspection path for discovery and diagnostics. Window tables and desktop metadata remain available, but the UI tree and actionable state contain only elements from the selected scan scope.
@@ -71,7 +71,7 @@ Input errors distinguish invalid scope combinations and timeout ranges. Invocati
 - Interactive UIA tests remain ignored unless an interactive Windows desktop is available.
 - `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo build --release` validate the implementation.
 - Before/after profiling records metadata-only Snapshot, foreground UI-tree Snapshot, all-window Snapshot, and Screenshot timings.
-- A manual Claude E2E check uses structured IDs and `InvokeElement` to navigate from the profile menu to Settings, then verifies settings content with a foreground Snapshot.
+- A manual Claude E2E check uses the structured profile location and `InvokeElement` for the Settings menu item, then verifies settings content with a foreground Snapshot. Claude's UIA provider advertises ExpandCollapse for the profile button but does not open the popup when that pattern is called, so that one provider-specific step uses the existing validated Click path.
 
 ## Success criteria
 
