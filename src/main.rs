@@ -5,6 +5,7 @@ mod apps;
 mod capture;
 mod display;
 mod fuzzy;
+mod ia2;
 mod input_sim;
 mod keys;
 mod params;
@@ -13,6 +14,7 @@ mod server;
 mod state;
 mod tools;
 mod uia;
+mod vdm;
 mod win;
 mod window;
 

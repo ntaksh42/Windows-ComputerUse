@@ -1,7 +1,5 @@
 //! MCP クライアント (特に Claude Desktop) は bool や配列を JSON 文字列で
 //! 送ることがあるため、両形式を受け付けるパラメータ型を提供する。
-#![allow(dead_code)] // TODO: 全ツール実装後に削除
-
 use schemars::JsonSchema;
 use serde::Deserialize;
 

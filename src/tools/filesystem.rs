@@ -55,9 +55,9 @@ pub struct FileSystemParams {
     pub offset: Option<i64>,
     /// Maximum number of lines to read for read mode.
     pub limit: Option<i64>,
-    /// Text encoding. Only "utf-8" is supported.
+    /// Text encoding (WHATWG label such as utf-8, utf-16le, shift_jis, or windows-1252).
     #[serde(default = "default_encoding")]
-    #[schemars(description = "Text encoding. Only \"utf-8\" is supported.")]
+    #[schemars(description = "Text encoding label (default utf-8).")]
     pub encoding: String,
     /// Include dotfile entries in list mode.
     #[serde(default)]
@@ -106,12 +106,9 @@ pub fn file_system(params: FileSystemParams) -> String {
         Err(e) => return format!("Error: {e}"),
     };
 
-    if !params.encoding.eq_ignore_ascii_case("utf-8") {
-        return format!(
-            "Error: Unsupported encoding \"{}\". Only \"utf-8\" is supported.",
-            params.encoding
-        );
-    }
+    let Some(encoding) = encoding_rs::Encoding::for_label(params.encoding.as_bytes()) else {
+        return format!("Error: Unsupported encoding \"{}\".", params.encoding);
+    };
 
     let base = desktop_dir();
     let path = resolve_path(&params.path, &base);
@@ -121,10 +118,10 @@ pub fn file_system(params: FileSystemParams) -> String {
         .map(|d| resolve_path(d, &base));
 
     match params.mode {
-        FileSystemMode::Read => read_file(&path, params.offset, params.limit),
+        FileSystemMode::Read => read_file(&path, params.offset, params.limit, encoding),
         FileSystemMode::Write => match params.content {
             None => "Error: content parameter is required for write mode.".to_string(),
-            Some(content) => write_file(&path, &content, append),
+            Some(content) => write_file(&path, &content, append, encoding),
         },
         FileSystemMode::Copy => match destination {
             None => "Error: destination parameter is required for copy mode.".to_string(),
@@ -175,7 +172,12 @@ fn is_elevated() -> bool {
     unsafe { windows::Win32::UI::Shell::IsUserAnAdmin().as_bool() }
 }
 
-fn read_file(path: &Path, offset: Option<i64>, limit: Option<i64>) -> String {
+fn read_file(
+    path: &Path,
+    offset: Option<i64>,
+    limit: Option<i64>,
+    encoding: &'static encoding_rs::Encoding,
+) -> String {
     if !path.exists() {
         return format!("Error: File not found: {}", path.display());
     }
@@ -199,7 +201,7 @@ fn read_file(path: &Path, offset: Option<i64>, limit: Option<i64>) -> String {
         Ok(b) => b,
         Err(e) => return read_error(&e, path),
     };
-    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let text = decode_text(&bytes, encoding);
 
     if offset.is_some() || limit.is_some() {
         let lines: Vec<&str> = split_keep_newlines(&text);
@@ -253,13 +255,19 @@ fn read_error(e: &io::Error, path: &Path) -> String {
     }
 }
 
-fn write_file(path: &Path, content: &str, append: bool) -> String {
+fn write_file(
+    path: &Path,
+    content: &str,
+    append: bool,
+    encoding: &'static encoding_rs::Encoding,
+) -> String {
     if let Some(parent) = path.parent()
         && let Err(e) = fs::create_dir_all(parent)
     {
         return write_error(&e, path);
     }
 
+    let encoded = encode_text(content, encoding);
     let result = if append {
         fs::OpenOptions::new()
             .create(true)
@@ -267,10 +275,10 @@ fn write_file(path: &Path, content: &str, append: bool) -> String {
             .open(path)
             .and_then(|mut f| {
                 use std::io::Write;
-                f.write_all(content.as_bytes())
+                f.write_all(encoded.as_ref())
             })
     } else {
-        fs::write(path, content.as_bytes())
+        fs::write(path, encoded.as_ref())
     };
 
     if let Err(e) = result {
@@ -280,6 +288,34 @@ fn write_file(path: &Path, content: &str, append: bool) -> String {
     let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let action = if append { "Appended to" } else { "Written to" };
     format!("{action} {} ({} bytes)", path.display(), with_commas(size))
+}
+
+fn decode_text(bytes: &[u8], encoding: &'static encoding_rs::Encoding) -> String {
+    if encoding == encoding_rs::UTF_16LE || encoding == encoding_rs::UTF_16BE {
+        let units = bytes.chunks_exact(2).map(|pair| {
+            if encoding == encoding_rs::UTF_16LE {
+                u16::from_le_bytes([pair[0], pair[1]])
+            } else {
+                u16::from_be_bytes([pair[0], pair[1]])
+            }
+        });
+        String::from_utf16_lossy(&units.collect::<Vec<_>>())
+    } else {
+        encoding.decode(bytes).0.into_owned()
+    }
+}
+
+fn encode_text<'a>(
+    content: &'a str,
+    encoding: &'static encoding_rs::Encoding,
+) -> std::borrow::Cow<'a, [u8]> {
+    if encoding == encoding_rs::UTF_16LE {
+        std::borrow::Cow::Owned(content.encode_utf16().flat_map(u16::to_le_bytes).collect())
+    } else if encoding == encoding_rs::UTF_16BE {
+        std::borrow::Cow::Owned(content.encode_utf16().flat_map(u16::to_be_bytes).collect())
+    } else {
+        encoding.encode(content).0
+    }
 }
 
 fn write_error(e: &io::Error, path: &Path) -> String {
@@ -311,8 +347,8 @@ fn copy_path(src: &Path, dst: &Path, overwrite: bool) -> String {
         {
             return copy_error(&e);
         }
-        match fs::copy(src, dst) {
-            Ok(_) => format!("Copied file: {} -> {}", src.display(), dst.display()),
+        match copy_file(src, dst) {
+            Ok(()) => format!("Copied file: {} -> {}", src.display(), dst.display()),
             Err(e) => copy_error(&e),
         }
     } else if src.is_dir() {
@@ -348,10 +384,19 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
         if file_type.is_dir() {
             copy_dir_recursive(&entry.path(), &dst_path)?;
         } else {
-            fs::copy(entry.path(), &dst_path)?;
+            copy_file(&entry.path(), &dst_path)?;
         }
     }
     Ok(())
+}
+
+fn copy_file(src: &Path, dst: &Path) -> io::Result<()> {
+    fs::copy(src, dst)?;
+    let metadata = fs::metadata(src)?;
+    fs::set_permissions(dst, metadata.permissions())?;
+    let accessed = filetime::FileTime::from_last_access_time(&metadata);
+    let modified = filetime::FileTime::from_last_modification_time(&metadata);
+    filetime::set_file_times(dst, accessed, modified)
 }
 
 fn move_path(src: &Path, dst: &Path, overwrite: bool) -> String {
@@ -387,9 +432,7 @@ fn move_path(src: &Path, dst: &Path, overwrite: bool) -> String {
         if src.is_dir() {
             copy_dir_recursive(src, dst).and_then(|()| fs::remove_dir_all(src))
         } else {
-            fs::copy(src, dst)
-                .map(|_| ())
-                .and_then(|()| fs::remove_file(src))
+            copy_file(src, dst).and_then(|()| fs::remove_file(src))
         }
     });
 
@@ -603,7 +646,11 @@ fn search_files(path: &Path, pattern: &str, recursive: bool) -> String {
             .unwrap_or("");
         glob_match(pattern, name)
     });
-    raw.sort_by_key(|(a, _)| sort_key(a));
+    raw.sort_by(|(a, a_is_dir), (b, b_is_dir)| {
+        (!a_is_dir)
+            .cmp(&!b_is_dir)
+            .then_with(|| sort_key(a).cmp(&sort_key(b)))
+    });
 
     if raw.is_empty() {
         return format!("No matches found for \"{pattern}\" in {}", path.display());
@@ -844,5 +891,19 @@ mod tests {
         assert!(!glob_match("*.txt", "notes.md"));
         assert!(glob_match("file?.log", "file1.log"));
         assert!(glob_match("*", "anything"));
+    }
+
+    #[test]
+    fn reads_and_writes_requested_text_encoding() {
+        let path = std::env::temp_dir().join(format!(
+            "windows-computeruse-encoding-test-{}.txt",
+            std::process::id()
+        ));
+        let encoding = encoding_rs::UTF_16LE;
+        let written = write_file(&path, "hello 世界", false, encoding);
+        assert!(written.starts_with("Written to"));
+        let read = read_file(&path, None, None, encoding);
+        assert!(read.ends_with("hello 世界"));
+        std::fs::remove_file(path).unwrap();
     }
 }

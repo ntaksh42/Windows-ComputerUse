@@ -16,6 +16,14 @@ const PRE_DRAG_WAIT: Duration = Duration::from_millis(500);
 const DRAG_START_WAIT: Duration = Duration::from_millis(50);
 const DRAG_END_WAIT: Duration = Duration::from_millis(500);
 
+struct LeftButtonGuard;
+
+impl Drop for LeftButtonGuard {
+    fn drop(&mut self) {
+        input_sim::mouse_up(MouseButton::Left);
+    }
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct MoveParams {
     /// Target coordinates `[x, y]`. Provide either `loc` or `label`.
@@ -75,12 +83,13 @@ pub fn move_mouse(params: MoveParams) -> Result<String, String> {
 
     input_sim::set_cursor_pos(start_x, start_y);
     input_sim::mouse_down(MouseButton::Left);
+    let button_guard = LeftButtonGuard;
     std::thread::sleep(DRAG_START_WAIT);
     match params.duration {
         Some(duration) => input_sim::move_smooth_duration(x, y, duration, DRAG_START_WAIT),
         None => input_sim::move_smooth(x, y, 1.0, DRAG_START_WAIT),
     }
-    input_sim::mouse_up(MouseButton::Left);
+    drop(button_guard);
     std::thread::sleep(DRAG_END_WAIT);
 
     match params.duration {

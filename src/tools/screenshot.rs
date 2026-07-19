@@ -1,23 +1,19 @@
 //! `Screenshot` tool: fast screenshot-first desktop capture.
 //!
-//! This is the vision-only, UI-tree-skipping counterpart to the (not yet
-//! implemented) `Snapshot` tool: it captures the desktop (or a subset of
+//! This is the vision-only, UI-tree-skipping counterpart to `Snapshot`: it
+//! captures the desktop (or a subset of
 //! displays), scales it to fit within 1920x1080, optionally overlays a
 //! reference grid, and returns a text summary plus a PNG image.
 
-use std::env;
-use std::time::Instant;
-
-use image::ImageEncoder;
-use image::imageops::FilterType;
 use rmcp::schemars;
 use serde::Deserialize;
-use windows::Win32::Foundation::{POINT, RECT};
+use std::env;
+use windows::Win32::Foundation::POINT;
 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
-use crate::capture;
 use crate::display;
-use crate::params::{BoolOrString, ListOrString, opt_bool};
+use crate::params::{BoolOrString, ListOrString};
+use crate::tools::snapshot::{self, SnapshotParams};
 
 /// Screenshots are downscaled to fit within this size (before applying
 /// `WINDOWS_MCP_SCREENSHOT_SCALE`).
@@ -180,107 +176,21 @@ pub(crate) fn display_list_text(displays: &[display::Display]) -> String {
 /// expected to wrap it as `"Error capturing screenshot: {e}. Please try
 /// again."` per the tool's error contract.
 pub fn screenshot(params: &ScreenshotParams) -> Result<ScreenshotOutput, String> {
-    let _ = opt_bool(&params.use_annotation, false)?; // accepted, currently unused
-
-    let profile = profiling_enabled();
-    let started = Instant::now();
-
-    let display_indices: Option<Vec<usize>> = match &params.display {
-        None => None,
-        Some(list) => {
-            let raw = list.clone().into_list()?;
-            Some(raw.into_iter().map(|v| v as usize).collect())
-        }
-    };
-
-    let capture_start = Instant::now();
-    let (capture_rect, region_text): (RECT, Option<(String, String)>) = match &display_indices {
-        None => (capture::virtual_screen_rect(), None),
-        Some(indices) => {
-            let rect = display::get_display_union_rect(indices)?;
-            let csv = indices
-                .iter()
-                .map(|i| i.to_string())
-                .collect::<Vec<_>>()
-                .join(",");
-            let region = format!(
-                "({},{},{},{})",
-                rect.left, rect.top, rect.right, rect.bottom
-            );
-            (rect, Some((csv, region)))
-        }
-    };
-
-    let backend = capture::resolve_backend();
-    let captured = capture::capture_rect(capture_rect, backend)?;
-    let capture_ms = capture_start.elapsed().as_secs_f64() * 1000.0;
-
-    let orig_width = captured.width();
-    let orig_height = captured.height();
-    let user_scale = resolve_scale();
-    let scale = combined_scale(orig_width, orig_height, user_scale);
-
-    let resize_start = Instant::now();
-    let mut image = if scale != 1.0 {
-        let (w, h) = scaled_size(orig_width, orig_height, scale);
-        image::imageops::resize(&captured, w.max(1), h.max(1), FilterType::Lanczos3)
-    } else {
-        captured
-    };
-    let resize_ms = resize_start.elapsed().as_secs_f64() * 1000.0;
-
-    if let (Some(w), Some(h)) = (params.width_reference_line, params.height_reference_line) {
-        draw_grid_lines(&mut image, w, h);
-    }
-
-    let encode_start = Instant::now();
-    let mut png_bytes = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut png_bytes)
-        .write_image(
-            image.as_raw(),
-            image.width(),
-            image.height(),
-            image::ExtendedColorType::Rgba8,
-        )
-        .map_err(|e| format!("PNG encoding failed: {e}"))?;
-    let encode_ms = encode_start.elapsed().as_secs_f64() * 1000.0;
-
-    if profile {
-        eprintln!(
-            "Screenshot tool profile: capture_ms={capture_ms:.1} resize_ms={resize_ms:.1} \
-             encode_ms={encode_ms:.1} total_ms={:.1}",
-            started.elapsed().as_secs_f64() * 1000.0
-        );
-    }
-
-    let (cx, cy) = cursor_position();
-    let mut text = format!("Cursor Position: ({cx}, {cy})\n");
-
-    if scale < 1.0 {
-        let coord_scale = (1.0 / scale * 1_000_000.0).round() / 1_000_000.0;
-        text += &format!("Screenshot Original Size: ({orig_width},{orig_height})\n");
-        text += &coordinate_scale_text(coord_scale);
-        text += "\n";
-    } else {
-        text += &format!("Screenshot Size: ({},{})\n", image.width(), image.height());
-    }
-
-    let displays = display::get_displays();
-    if !displays.is_empty() {
-        text += &format!("Visible Displays: {}\n", display_list_text(&displays));
-    }
-
-    if let Some((csv, region)) = &region_text {
-        text += &format!("Selected Displays: {csv}\n");
-        text += &format!("Screenshot Region: {region}\n");
-        text += "Coordinate Space: Virtual desktop coordinates\n";
-    }
-
-    text += &format!("Screenshot Backend: {}\n", backend.name());
-    text += "UI Tree: Skipped for fast screenshot-only capture. Call Snapshot when you need interactive or scrollable elements.\n";
-    text += "\nFocused Window:\nNo active window found\n\nOpened Windows:\nNo windows found\n";
-
-    Ok(ScreenshotOutput { text, png_bytes })
+    let result = snapshot::capture(&SnapshotParams {
+        use_vision: Some(BoolOrString::Bool(true)),
+        use_dom: Some(BoolOrString::Bool(false)),
+        use_annotation: params.use_annotation.clone(),
+        use_ui_tree: Some(BoolOrString::Bool(false)),
+        width_reference_line: params.width_reference_line,
+        height_reference_line: params.height_reference_line,
+        display: params.display.clone(),
+    })?;
+    Ok(ScreenshotOutput {
+        text: result.text,
+        png_bytes: result
+            .png_bytes
+            .ok_or_else(|| "Screenshot capture returned no image".to_string())?,
+    })
 }
 
 #[cfg(test)]

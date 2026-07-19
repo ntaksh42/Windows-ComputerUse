@@ -2,14 +2,15 @@
 //! tool's `resize`/`switch` modes (docs/SPEC.md §1).
 //!
 //! This works directly against Win32 top-level windows via `EnumWindows`
-//! rather than the full UIA-based Snapshot/Tree service (not yet
-//! implemented), which is the source of window state in the Python
-//! reference. See the implementer's final report for this scope note.
+//! rather than the UIA-based Snapshot tree service.
 
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{HWND, LPARAM, RECT};
-use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT};
+use windows::Win32::System::Threading::{
+    AttachThreadInput, GetCurrentThreadId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    QueryFullProcessImageNameW,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     ASFW_ANY, AllowSetForegroundWindow, BringWindowToTop, EnumWindows, FindWindowW, GetClassNameW,
     GetForegroundWindow, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
@@ -17,7 +18,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SW_RESTORE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetForegroundWindow, SetWindowPos,
     ShowWindow,
 };
-use windows::core::{BOOL, PCWSTR};
+use windows::core::{BOOL, PCWSTR, PWSTR};
 
 /// A visible, titled top-level window.
 #[derive(Debug, Clone)]
@@ -40,6 +41,17 @@ pub fn list_windows() -> Vec<WindowInfo> {
         );
     }
     windows
+}
+
+/// Visible titled windows belonging to the active virtual desktop.
+pub fn list_current_windows() -> Vec<WindowInfo> {
+    list_windows()
+        .into_iter()
+        .filter(|window| {
+            crate::vdm::is_window_on_current_desktop(window.handle)
+                && !window.title.trim().contains("Overlay")
+        })
+        .collect()
 }
 
 unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
@@ -95,18 +107,56 @@ pub struct SnapshotWindow {
     pub handle: isize,
     pub title: String,
     pub class_name: String,
+    pub pid: u32,
+}
+
+impl SnapshotWindow {
+    pub fn is_browser(&self) -> bool {
+        process_executable_name(self.pid).is_some_and(|name| {
+            matches!(name.as_str(), "chrome.exe" | "msedge.exe" | "firefox.exe")
+        })
+    }
+
+    pub fn is_firefox(&self) -> bool {
+        process_executable_name(self.pid).as_deref() == Some("firefox.exe")
+    }
+}
+
+fn process_executable_name(pid: u32) -> Option<String> {
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buffer = vec![0u16; 32_768];
+        let mut length = buffer.len() as u32;
+        let result = QueryFullProcessImageNameW(
+            process,
+            Default::default(),
+            PWSTR(buffer.as_mut_ptr()),
+            &mut length,
+        );
+        let _ = CloseHandle(process);
+        result.ok()?;
+        std::path::Path::new(&String::from_utf16_lossy(&buffer[..length as usize]))
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.to_ascii_lowercase())
+    }
 }
 
 unsafe extern "system" fn enum_snapshot_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
     unsafe {
         let windows = &mut *(lparam.0 as *mut Vec<SnapshotWindow>);
-        if !IsWindowVisible(hwnd).as_bool() {
+        if !IsWindowVisible(hwnd).as_bool()
+            || !crate::vdm::is_window_on_current_desktop(hwnd.0 as isize)
+        {
             return true.into();
         }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
         windows.push(SnapshotWindow {
             handle: hwnd.0 as isize,
             title: window_title(hwnd),
             class_name: window_class_name(hwnd),
+            pid,
         });
         true.into()
     }
@@ -139,6 +189,11 @@ pub fn list_snapshot_windows() -> Vec<SnapshotWindow> {
                 handle: hwnd.0 as isize,
                 title: window_title(hwnd),
                 class_name: class_name.to_string(),
+                pid: {
+                    let mut pid = 0;
+                    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+                    pid
+                },
             });
         }
     }

@@ -47,6 +47,9 @@ pub fn multi_select(params: MultiSelectParams) -> Result<String, String> {
         let labels = labels.into_list()?;
         points.extend(resolve_labels_checked(&labels)?);
     }
+    if points.is_empty() {
+        return Err("At least one loc or label must be provided.".to_string());
+    }
 
     let press_ctrl = opt_bool(&params.press_ctrl, true)?;
 

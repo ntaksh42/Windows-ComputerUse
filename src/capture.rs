@@ -1,13 +1,21 @@
 //! Screen capture backends.
 //!
-//! Only the GDI backend is implemented today. `Backend` is an enum (not a
-//! trait) since there is exactly one implementation; a `Dxgi` variant is
-//! reserved for a future, faster backend but has no capture logic behind it.
-
 use std::env;
 use std::ffi::c_void;
 
-use windows::Win32::Foundation::RECT;
+use windows::Win32::Foundation::{HMODULE, RECT};
+use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
+use windows::Win32::Graphics::Direct3D11::{
+    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ,
+    D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
+    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
+};
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_MODE_ROTATION_ROTATE90, DXGI_MODE_ROTATION_ROTATE180, DXGI_MODE_ROTATION_ROTATE270,
+};
+use windows::Win32::Graphics::Dxgi::{
+    CreateDXGIFactory1, DXGI_OUTDUPL_FRAME_INFO, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput1,
+};
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC,
     DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC, SRCCOPY, SelectObject,
@@ -15,19 +23,20 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
+use windows::core::Interface;
 
 /// Screen capture backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
+    Auto,
     Gdi,
-    /// Reserved for a future capture backend; no implementation yet.
-    #[allow(dead_code)]
     Dxgi,
 }
 
 impl Backend {
     pub fn name(&self) -> &'static str {
         match self {
+            Backend::Auto => "auto",
             Backend::Gdi => "gdi",
             Backend::Dxgi => "dxgi",
         }
@@ -35,11 +44,18 @@ impl Backend {
 }
 
 /// Resolves the capture backend from `WINDOWS_MCP_SCREENSHOT_BACKEND`
-/// (`auto`/`gdi`; unrecognized or unset values are treated as `auto`).
-/// Only GDI is implemented, so every value currently resolves to `Backend::Gdi`.
+/// (`auto`/`dxgi`/`gdi`; unrecognized or unset values are treated as `auto`).
 pub fn resolve_backend() -> Backend {
-    let _ = env::var("WINDOWS_MCP_SCREENSHOT_BACKEND").unwrap_or_default();
-    Backend::Gdi
+    match env::var("WINDOWS_MCP_SCREENSHOT_BACKEND")
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "gdi" | "mss" | "pillow" => Backend::Gdi,
+        "dxgi" | "dxcam" => Backend::Dxgi,
+        _ => Backend::Auto,
+    }
 }
 
 /// Returns the bounding rectangle of the full virtual desktop (all monitors).
@@ -58,21 +74,201 @@ pub fn virtual_screen_rect() -> RECT {
     }
 }
 
-/// Captures `rect` (virtual-desktop coordinates) as an RGBA image.
-pub fn capture_rect(rect: RECT, backend: Backend) -> Result<image::RgbaImage, String> {
+/// Captures a rectangle and reports the backend that actually succeeded.
+/// `auto` prefers Desktop Duplication and falls back to GDI when unavailable
+/// (for example on a locked desktop or an unsupported display adapter).
+pub fn capture_rect_with_backend(
+    rect: RECT,
+    backend: Backend,
+) -> Result<(image::RgbaImage, Backend), String> {
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
     if width <= 0 || height <= 0 {
         return Err(format!("Invalid capture region: {width}x{height}"));
     }
 
-    let pixels = match backend {
-        Backend::Gdi => unsafe { capture_rect_gdi(rect, width, height)? },
-        Backend::Dxgi => return Err("dxgi backend is not implemented".to_string()),
-    };
+    match backend {
+        Backend::Auto => match unsafe { capture_rect_dxgi(rect) } {
+            Ok(image) => Ok((image, Backend::Dxgi)),
+            Err(_) => capture_gdi_image(rect, width, height).map(|image| (image, Backend::Gdi)),
+        },
+        Backend::Gdi => capture_gdi_image(rect, width, height).map(|image| (image, Backend::Gdi)),
+        Backend::Dxgi => unsafe { capture_rect_dxgi(rect) }.map(|image| (image, Backend::Dxgi)),
+    }
+}
 
+fn capture_gdi_image(rect: RECT, width: i32, height: i32) -> Result<image::RgbaImage, String> {
+    let pixels = unsafe { capture_rect_gdi(rect, width, height)? };
     image::RgbaImage::from_raw(width as u32, height as u32, pixels)
         .ok_or_else(|| "Failed to build image buffer from captured pixels".to_string())
+}
+
+unsafe fn create_device(
+    adapter: &IDXGIAdapter1,
+) -> Result<(ID3D11Device, ID3D11DeviceContext), String> {
+    unsafe {
+        let mut device = None;
+        let mut context = None;
+        D3D11CreateDevice(
+            adapter,
+            D3D_DRIVER_TYPE_UNKNOWN,
+            HMODULE::default(),
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            None,
+            D3D11_SDK_VERSION,
+            Some(&mut device),
+            None,
+            Some(&mut context),
+        )
+        .map_err(|e| format!("D3D11CreateDevice failed: {e}"))?;
+        Ok((
+            device.ok_or("D3D11CreateDevice returned no device")?,
+            context.ok_or("D3D11CreateDevice returned no context")?,
+        ))
+    }
+}
+
+unsafe fn capture_output(
+    adapter: &IDXGIAdapter1,
+    output: &IDXGIOutput1,
+) -> Result<(RECT, image::RgbaImage), String> {
+    unsafe {
+        let output_desc = output
+            .GetDesc()
+            .map_err(|e| format!("GetDesc failed: {e}"))?;
+        let (device, context) = create_device(adapter)?;
+        let duplication = output
+            .DuplicateOutput(&device)
+            .map_err(|e| format!("DuplicateOutput failed: {e}"))?;
+        let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
+        let mut resource = None;
+        duplication
+            .AcquireNextFrame(500, &mut frame_info, &mut resource)
+            .map_err(|e| format!("AcquireNextFrame failed: {e}"))?;
+
+        let result = (|| {
+            let texture: ID3D11Texture2D = resource
+                .ok_or("AcquireNextFrame returned no resource")?
+                .cast()
+                .map_err(|e| format!("Frame is not a D3D11 texture: {e}"))?;
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            texture.GetDesc(&mut desc);
+            let staging_desc = D3D11_TEXTURE2D_DESC {
+                Usage: D3D11_USAGE_STAGING,
+                BindFlags: 0,
+                CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+                MiscFlags: 0,
+                ..desc
+            };
+            let mut staging = None;
+            device
+                .CreateTexture2D(&staging_desc, None, Some(&mut staging))
+                .map_err(|e| format!("CreateTexture2D staging failed: {e}"))?;
+            let staging = staging.ok_or("CreateTexture2D returned no staging texture")?;
+            context.CopyResource(&staging, &texture);
+
+            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+            context
+                .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+                .map_err(|e| format!("Map staging texture failed: {e}"))?;
+            let mut pixels = vec![0u8; desc.Width as usize * desc.Height as usize * 4];
+            for y in 0..desc.Height as usize {
+                let source = std::slice::from_raw_parts(
+                    (mapped.pData as *const u8).add(y * mapped.RowPitch as usize),
+                    desc.Width as usize * 4,
+                );
+                let target =
+                    &mut pixels[y * desc.Width as usize * 4..(y + 1) * desc.Width as usize * 4];
+                target.copy_from_slice(source);
+                for pixel in target.chunks_exact_mut(4) {
+                    pixel.swap(0, 2);
+                    pixel[3] = 255;
+                }
+            }
+            context.Unmap(&staging, 0);
+            let image = image::RgbaImage::from_raw(desc.Width, desc.Height, pixels)
+                .ok_or_else(|| "Failed to build DXGI image buffer".to_string())?;
+            let image = match output_desc.Rotation {
+                DXGI_MODE_ROTATION_ROTATE90 => image::imageops::rotate90(&image),
+                DXGI_MODE_ROTATION_ROTATE180 => image::imageops::rotate180(&image),
+                DXGI_MODE_ROTATION_ROTATE270 => image::imageops::rotate270(&image),
+                _ => image,
+            };
+            Ok((output_desc.DesktopCoordinates, image))
+        })();
+        let _ = duplication.ReleaseFrame();
+        result
+    }
+}
+
+unsafe fn capture_rect_dxgi(rect: RECT) -> Result<image::RgbaImage, String> {
+    unsafe {
+        let factory: IDXGIFactory1 =
+            CreateDXGIFactory1().map_err(|e| format!("CreateDXGIFactory1 failed: {e}"))?;
+        let width = (rect.right - rect.left) as u32;
+        let height = (rect.bottom - rect.top) as u32;
+        let mut result = image::RgbaImage::new(width, height);
+        let mut captured_any = false;
+        let mut last_error = None;
+
+        for adapter_index in 0.. {
+            let Ok(adapter) = factory.EnumAdapters1(adapter_index) else {
+                break;
+            };
+            for output_index in 0.. {
+                let Ok(output) = adapter.EnumOutputs(output_index) else {
+                    break;
+                };
+                let output: IDXGIOutput1 = match output.cast() {
+                    Ok(output) => output,
+                    Err(_) => continue,
+                };
+                let desc = output
+                    .GetDesc()
+                    .map_err(|e| format!("GetDesc failed: {e}"))?;
+                if !desc.AttachedToDesktop.as_bool() {
+                    continue;
+                }
+                let bounds = desc.DesktopCoordinates;
+                let left = rect.left.max(bounds.left);
+                let top = rect.top.max(bounds.top);
+                let right = rect.right.min(bounds.right);
+                let bottom = rect.bottom.min(bounds.bottom);
+                if right <= left || bottom <= top {
+                    continue;
+                }
+
+                let (output_bounds, output_image) = match capture_output(&adapter, &output) {
+                    Ok(capture) => capture,
+                    Err(error) => {
+                        last_error = Some(error);
+                        continue;
+                    }
+                };
+                let source_x = (left - output_bounds.left) as u32;
+                let source_y = (top - output_bounds.top) as u32;
+                for y in 0..(bottom - top) as u32 {
+                    for x in 0..(right - left) as u32 {
+                        if let Some(pixel) =
+                            output_image.get_pixel_checked(source_x + x, source_y + y)
+                        {
+                            result.put_pixel(
+                                (left - rect.left) as u32 + x,
+                                (top - rect.top) as u32 + y,
+                                *pixel,
+                            );
+                        }
+                    }
+                }
+                captured_any = true;
+            }
+        }
+        captured_any.then_some(result).ok_or_else(|| {
+            last_error.unwrap_or_else(|| {
+                "DXGI found no attached display intersecting the capture region".to_string()
+            })
+        })
+    }
 }
 
 /// Captures `rect` via GDI `BitBlt` + `GetDIBits`, returning RGBA bytes.
@@ -159,9 +355,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolve_backend_is_always_gdi_today() {
-        assert_eq!(resolve_backend(), Backend::Gdi);
-        assert_eq!(resolve_backend().name(), "gdi");
+    fn backend_names_are_stable() {
+        assert_eq!(Backend::Auto.name(), "auto");
+        assert_eq!(Backend::Dxgi.name(), "dxgi");
+        assert_eq!(Backend::Gdi.name(), "gdi");
     }
 
     #[test]
@@ -172,7 +369,16 @@ mod tests {
             right: 0,
             bottom: 100,
         };
-        let err = capture_rect(rect, Backend::Gdi).unwrap_err();
+        let err = capture_rect_with_backend(rect, Backend::Gdi).unwrap_err();
         assert!(err.contains("Invalid capture region"));
+    }
+
+    #[test]
+    #[ignore = "requires an interactive Windows desktop"]
+    fn dxgi_captures_the_live_virtual_screen() {
+        let (image, backend) =
+            capture_rect_with_backend(virtual_screen_rect(), Backend::Dxgi).unwrap();
+        assert_eq!(backend, Backend::Dxgi);
+        assert!(image.width() > 0 && image.height() > 0);
     }
 }

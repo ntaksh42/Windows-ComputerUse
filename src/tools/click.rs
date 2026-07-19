@@ -56,10 +56,13 @@ pub fn click(params: ClickParams) -> Result<String, String> {
     let (x, y) = resolve_point_required(params.loc, params.label)?;
     let button = params.button.unwrap_or(ClickButton::Left);
     let clicks = params.clicks.unwrap_or(1);
+    if !(0..=2).contains(&clicks) {
+        return Err("clicks must be 0 (hover), 1 (single), or 2 (double).".to_string());
+    }
 
     if clicks == 0 {
         input_sim::set_cursor_pos(x, y);
-    } else if button == ClickButton::Left && clicks >= 2 {
+    } else if button == ClickButton::Left && clicks == 2 {
         let dbl_wait = Duration::from_millis((input_sim::get_double_click_time_ms() / 2) as u64);
         for i in 0..clicks {
             let wait_after = if i < clicks - 1 {
@@ -79,10 +82,26 @@ pub fn click(params: ClickParams) -> Result<String, String> {
         0 => "Hover",
         1 => "Single",
         2 => "Double",
-        _ => "None",
+        _ => unreachable!("click count validated above"),
     };
     Ok(format!(
         "{clicks_word} {} clicked at ({x},{y}).",
         button.label()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_unsupported_click_count_before_input() {
+        let result = click(ClickParams {
+            loc: Some(ListOrString::List(vec![10, 20])),
+            label: None,
+            button: None,
+            clicks: Some(3),
+        });
+        assert!(result.unwrap_err().contains("clicks must be"));
+    }
 }

@@ -119,9 +119,9 @@ pub fn title_case(s: &str) -> String {
 }
 
 /// Launches a Start Menu app matching `name` (fuzzy, score_cutoff 70).
-/// Returns `(response, status_code, pid)`; `pid` is `None` when unknown
+/// Returns `(response, status_code, pid, matched_name)`; `pid` is `None` when unknown
 /// (e.g. `shell:AppsFolder` launches, which `Start-Process` does not report).
-pub fn launch_app(name: &str) -> (String, i32, Option<u32>) {
+pub fn launch_app(name: &str) -> (String, i32, Option<u32>, String) {
     let apps = get_apps_from_start_menu();
     let keys: Vec<&str> = apps.keys().map(String::as_str).collect();
     let Some((matched_key, _)) = crate::fuzzy::extract_one(name, keys, 70.0) else {
@@ -129,6 +129,7 @@ pub fn launch_app(name: &str) -> (String, i32, Option<u32>) {
             format!("{} not found in start menu.", title_case(name)),
             1,
             None,
+            name.to_string(),
         );
     };
     let matched_key = matched_key.to_string();
@@ -137,6 +138,7 @@ pub fn launch_app(name: &str) -> (String, i32, Option<u32>) {
             format!("{} not found in start menu.", title_case(name)),
             1,
             None,
+            name.to_string(),
         );
     };
 
@@ -152,16 +154,21 @@ pub fn launch_app(name: &str) -> (String, i32, Option<u32>) {
         } else {
             None
         };
-        (response, status, pid)
+        (response, status, pid, matched_key)
     } else {
         if !check_app_exists(appid) {
-            return (format!("Invalid app identifier: {appid}"), 1, None);
+            return (
+                format!("Invalid app identifier: {appid}"),
+                1,
+                None,
+                matched_key,
+            );
         }
         let command = format!(
             "Start-Process {}",
             ps_quote(&format!("shell:AppsFolder\\{appid}"))
         );
         let (response, status) = powershell::execute_command(&command, 10, None);
-        (response, status, None)
+        (response, status, None, matched_key)
     }
 }

@@ -22,7 +22,7 @@ use windows::Win32::UI::Accessibility::{
 
 use crate::params::{BoolOrString, ListOrString, opt_bool};
 use crate::tools::screenshot;
-use crate::{capture, display, state, uia, window};
+use crate::{capture, display, ia2, state, uia, vdm, window};
 
 /// Parameters for the `Snapshot` tool (docs/SPEC.md §6).
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -30,7 +30,7 @@ pub struct SnapshotParams {
     #[schemars(description = "Include a PNG screenshot in the response. Defaults to false.")]
     pub use_vision: Option<BoolOrString>,
     #[schemars(
-        description = "Browser DOM extraction. Not implemented in this build; passing true returns an error."
+        description = "Extract browser page content through UI Automation. Requires use_ui_tree=true."
     )]
     pub use_dom: Option<BoolOrString>,
     #[schemars(
@@ -68,6 +68,9 @@ pub(crate) struct SnapshotResult {
     pub png_bytes: Option<Vec<u8>>,
     pub interactive_nodes: Vec<state::ElementNode>,
     pub scrollable_nodes: Vec<state::ElementNode>,
+    pub informative_nodes: Vec<state::ElementNode>,
+    pub dom_found: bool,
+    pub dom_scroll_percent: f64,
     pub focused_window_title: Option<String>,
     pub window_titles: Vec<String>,
 }
@@ -81,16 +84,11 @@ impl SnapshotResult {
     }
 }
 
-/// Executes the `Snapshot` tool. `use_dom=true` is rejected up front (not
-/// implemented, docs/SPEC.md §6 item 7); any other capture failure is
-/// wrapped as `"Error capturing desktop state: {e}. Please try again."`.
+/// Executes the `Snapshot` tool. Any capture failure is wrapped as
+/// `"Error capturing desktop state: {e}. Please try again."`.
 /// On success, the accessibility-tree state is written to `state.rs` so
 /// subsequent Click/Type/Scroll/Move calls can resolve `label`s.
 pub fn snapshot(params: &SnapshotParams) -> Result<SnapshotOutput, String> {
-    let use_dom = opt_bool(&params.use_dom, false)?;
-    if use_dom {
-        return Err("DOM mode not supported yet.".to_string());
-    }
     let result = capture(params)
         .map_err(|e| format!("Error capturing desktop state: {e}. Please try again."))?;
     state::set_state(result.to_desktop_state());
@@ -115,10 +113,11 @@ fn walk_window_with_retry(
     cache_request: &IUIAutomationCacheRequest,
     condition: &IUIAutomationCondition,
     hwnd: HWND,
+    reverse_children: bool,
 ) -> Option<(uia::RawElement, Vec<uia::RawElement>)> {
     const MAX_RETRIES: u32 = 3;
     for attempt in 0..=MAX_RETRIES {
-        match uia::walk_window(automation, cache_request, condition, hwnd) {
+        match uia::walk_window(automation, cache_request, condition, hwnd, reverse_children) {
             Ok(result) => return Some(result),
             Err(_) if attempt < MAX_RETRIES => {
                 std::thread::sleep(Duration::from_millis(500 * (1u64 << attempt)));
@@ -134,6 +133,61 @@ fn format_tree_line(node: &state::ElementNode, action: &str) -> String {
         "({},{}) {} \"{}\"  [action: {action}]",
         node.center.0, node.center.1, node.control_type, node.name
     )
+}
+
+fn format_informative_line(node: &state::ElementNode) -> String {
+    format!(
+        "({},{}) {} \"{}\"",
+        node.center.0, node.center.1, node.control_type, node.name
+    )
+}
+
+fn raw_to_node(el: &uia::RawElement) -> Option<state::ElementNode> {
+    let (left, top, right, bottom) = (el.rect.left, el.rect.top, el.rect.right, el.rect.bottom);
+    if right <= left || bottom <= top {
+        return None;
+    }
+    Some(state::ElementNode {
+        name: el.name.clone(),
+        control_type: uia::control_type_name(el.control_type),
+        center: (left + (right - left) / 2, top + (bottom - top) / 2),
+        bounding_box: (left, top, right, bottom),
+        has_focus: el.has_keyboard_focus,
+    })
+}
+
+fn inside_rect(el: &uia::RawElement, bounds: &windows::Win32::Foundation::RECT) -> bool {
+    el.rect.right > bounds.left
+        && el.rect.left < bounds.right
+        && el.rect.bottom > bounds.top
+        && el.rect.top < bounds.bottom
+}
+
+fn rects_intersect(
+    a: &windows::Win32::Foundation::RECT,
+    b: &windows::Win32::Foundation::RECT,
+) -> bool {
+    a.right > b.left && a.left < b.right && a.bottom > b.top && a.top < b.bottom
+}
+
+fn clip_node_to_rect(
+    mut node: state::ElementNode,
+    region: Option<&windows::Win32::Foundation::RECT>,
+) -> Option<state::ElementNode> {
+    let Some(region) = region else {
+        return Some(node);
+    };
+    let (left, top, right, bottom) = node.bounding_box;
+    let left = left.max(region.left);
+    let top = top.max(region.top);
+    let right = right.min(region.right);
+    let bottom = bottom.min(region.bottom);
+    if right <= left || bottom <= top {
+        return None;
+    }
+    node.bounding_box = (left, top, right, bottom);
+    node.center = (left + (right - left) / 2, top + (bottom - top) / 2);
+    Some(node)
 }
 
 /// Renders the `UI Tree:` box-drawing text: `desktop` root, one `window
@@ -247,13 +301,14 @@ fn focused_window_text(foreground: &Option<window::WindowInfo>) -> String {
     }
 }
 
-/// "Active Desktop"/"All Desktops" virtual-desktop table. Hardcoded to a
-/// single "Default Desktop" row — virtual desktop enumeration is out of
-/// scope for this build (docs/SPEC.md §6 item 7); this matches the shape the
-/// Python reference itself falls back to when the internal VDM COM
-/// interface is unavailable.
-fn desktop_table() -> String {
-    format_table(&["Name"], &[vec!["Default Desktop".to_string()]])
+fn desktop_table(desktops: &[vdm::VirtualDesktop]) -> String {
+    format_table(
+        &["Name"],
+        &desktops
+            .iter()
+            .map(|desktop| vec![desktop.name.clone()])
+            .collect::<Vec<_>>(),
+    )
 }
 
 // --- Annotated-screenshot drawing -----------------------------------------
@@ -424,22 +479,33 @@ fn draw_annotations(
 /// yet wrapped with "Error capturing desktop state: ...").
 pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String> {
     let use_vision = opt_bool(&params.use_vision, false)?;
+    let use_dom = opt_bool(&params.use_dom, false)?;
     let use_annotation = opt_bool(&params.use_annotation, true)?;
     let use_ui_tree = opt_bool(&params.use_ui_tree, true)?;
+    if use_dom && !use_ui_tree {
+        return Err("use_dom=true requires use_ui_tree=true".to_string());
+    }
     let display_indices: Option<Vec<usize>> = match &params.display {
         None => None,
         Some(list) => {
             let raw = list.clone().into_list()?;
+            if let Some(index) = raw.iter().find(|index| **index < 0) {
+                return Err(format!("Invalid display index {index}"));
+            }
             Some(raw.into_iter().map(|v| v as usize).collect())
         }
     };
+    let selected_rect = display_indices
+        .as_ref()
+        .map(|indices| display::get_display_union_rect(indices))
+        .transpose()?;
 
     let profile = screenshot::profiling_enabled();
     let total_start = Instant::now();
 
     // --- Window enumeration ---
     let window_start = Instant::now();
-    let table_windows = window::list_windows();
+    let table_windows = window::list_current_windows();
     let foreground = window::foreground_window();
     let walk_windows = if use_ui_tree {
         window::list_snapshot_windows()
@@ -452,13 +518,20 @@ pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String>
     let uia_start = Instant::now();
     let mut interactive_nodes: Vec<state::ElementNode> = Vec::new();
     let mut scrollable_nodes: Vec<state::ElementNode> = Vec::new();
+    let mut informative_nodes: Vec<state::ElementNode> = Vec::new();
+    let mut dom_found = false;
+    let mut dom_scroll_percent = 0.0;
     let mut window_trees: Vec<WindowTree> = Vec::new();
 
     if use_ui_tree && !walk_windows.is_empty() {
         uia::ensure_com_initialized()?;
         let automation = uia::create_automation().map_err(|e| e.to_string())?;
-        let cache_request = uia::build_cache_request(&automation).map_err(|e| e.to_string())?;
         let condition = uia::build_condition(&automation).map_err(|e| e.to_string())?;
+        let dom_condition = uia::build_dom_condition(&automation).map_err(|e| e.to_string())?;
+        let cache_request =
+            uia::build_cache_request(&automation, &condition).map_err(|e| e.to_string())?;
+        let dom_cache_request =
+            uia::build_cache_request(&automation, &dom_condition).map_err(|e| e.to_string())?;
 
         // Active/foreground window first so it gets the lowest label
         // indices, then the rest in enumeration order.
@@ -476,9 +549,23 @@ pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String>
 
         for win in ordered {
             let hwnd = HWND(win.handle as *mut _);
-            let Some((root_raw, elements)) =
-                walk_window_with_retry(&automation, &cache_request, &condition, hwnd)
-            else {
+            let window_condition = if use_dom && win.is_browser() {
+                &dom_condition
+            } else {
+                &condition
+            };
+            let window_cache_request = if use_dom && win.is_browser() {
+                &dom_cache_request
+            } else {
+                &cache_request
+            };
+            let Some((root_raw, elements)) = walk_window_with_retry(
+                &automation,
+                window_cache_request,
+                window_condition,
+                hwnd,
+                !(use_dom && win.is_browser()),
+            ) else {
                 continue; // window never succeeded; contributes nothing
             };
 
@@ -489,48 +576,127 @@ pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String>
             } else {
                 win.class_name.clone()
             };
+            if elements.is_empty() || window_label.trim().contains("Overlay") {
+                continue;
+            }
 
             let mut local_interactive: Vec<state::ElementNode> = Vec::new();
             let mut local_scrollable: Vec<state::ElementNode> = Vec::new();
+            let mut local_informative: Vec<state::ElementNode> = Vec::new();
 
-            for el in elements {
+            let dom_root = if use_dom && win.is_browser() {
+                elements.iter().position(|el| {
+                    el.automation_id == "RootWebArea"
+                        || (win.class_name == "MozillaWindowClass"
+                            && el.control_type == uia::DOCUMENT_CONTROL_TYPE)
+                })
+            } else {
+                None
+            };
+            let dom_bounds = dom_root.map(|index| elements[index].rect);
+            if dom_root.is_some()
+                && dom_bounds.as_ref().is_some_and(|bounds| {
+                    selected_rect
+                        .as_ref()
+                        .is_none_or(|region| rects_intersect(bounds, region))
+                })
+            {
+                dom_found = true;
+                if let Some(index) = dom_root {
+                    dom_scroll_percent = elements[index].vertical_scroll_percent;
+                }
+            }
+
+            for (element_index, el) in elements.into_iter().enumerate() {
+                if let (Some(root_index), Some(bounds)) = (dom_root, dom_bounds) {
+                    if element_index < root_index || !inside_rect(&el, &bounds) {
+                        continue;
+                    }
+                } else if use_dom && win.is_browser() {
+                    continue;
+                }
                 if el.control_type == uia::WINDOW_CONTROL_TYPE {
                     // Nested modal dialog: discard everything accumulated
                     // for this window so far (docs/SPEC.md §6 item 4).
                     if el.is_modal {
                         local_interactive.clear();
+                        local_scrollable.clear();
+                        local_informative.clear();
                     }
                     continue;
                 }
-                let (left, top, right, bottom) =
-                    (el.rect.left, el.rect.top, el.rect.right, el.rect.bottom);
-                if right <= left || bottom <= top {
+                let Some(node) = raw_to_node(&el)
+                    .and_then(|node| clip_node_to_rect(node, selected_rect.as_ref()))
+                else {
                     continue;
-                }
-                let center = (left + (right - left) / 2, top + (bottom - top) / 2);
-                let node = state::ElementNode {
-                    name: el.name.clone(),
-                    control_type: uia::control_type_name(el.control_type),
-                    center,
-                    bounding_box: (left, top, right, bottom),
-                    has_focus: el.has_keyboard_focus,
                 };
                 let is_interactive_type = uia::INTERACTIVE_CONTROL_TYPES.contains(&el.control_type);
                 if is_interactive_type && el.is_enabled && !el.is_offscreen {
                     local_interactive.push(node);
                 } else if el.is_scrollable && !el.is_offscreen {
                     local_scrollable.push(node);
+                } else if dom_root.is_some() && !el.is_offscreen && !el.name.trim().is_empty() {
+                    local_informative.push(node);
                 }
             }
 
-            if !local_interactive.is_empty() || !local_scrollable.is_empty() {
-                let mut children =
-                    Vec::with_capacity(local_interactive.len() + local_scrollable.len());
+            if use_dom
+                && win.is_firefox()
+                && dom_root.is_none()
+                && let Ok(ia2_result) = ia2::walk_firefox(hwnd)
+                && ia2_result.dom_bounds.as_ref().is_some_and(|bounds| {
+                    selected_rect
+                        .as_ref()
+                        .is_none_or(|region| rects_intersect(bounds, region))
+                })
+            {
+                dom_found = true;
+                for element in ia2_result.elements {
+                    if element.offscreen
+                        || element.rect.right <= element.rect.left
+                        || element.rect.bottom <= element.rect.top
+                    {
+                        continue;
+                    }
+                    let node = state::ElementNode {
+                        name: element.name,
+                        control_type: element.control_type,
+                        center: (
+                            element.rect.left + (element.rect.right - element.rect.left) / 2,
+                            element.rect.top + (element.rect.bottom - element.rect.top) / 2,
+                        ),
+                        bounding_box: (
+                            element.rect.left,
+                            element.rect.top,
+                            element.rect.right,
+                            element.rect.bottom,
+                        ),
+                        has_focus: element.focused,
+                    };
+                    let Some(node) = clip_node_to_rect(node, selected_rect.as_ref()) else {
+                        continue;
+                    };
+                    if element.interactive && element.enabled {
+                        local_interactive.push(node);
+                    } else {
+                        local_informative.push(node);
+                    }
+                }
+            }
+
+            if !local_interactive.is_empty()
+                || !local_scrollable.is_empty()
+                || !local_informative.is_empty()
+            {
+                let mut children = Vec::with_capacity(
+                    local_interactive.len() + local_scrollable.len() + local_informative.len(),
+                );
                 children.extend(
                     local_interactive
                         .iter()
                         .map(|n| format_tree_line(n, "click")),
                 );
+                children.extend(local_informative.iter().map(format_informative_line));
                 children.extend(
                     local_scrollable
                         .iter()
@@ -544,6 +710,7 @@ pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String>
 
             interactive_nodes.extend(local_interactive);
             scrollable_nodes.extend(local_scrollable);
+            informative_nodes.extend(local_informative);
         }
     }
     let uia_ms = uia_start.elapsed().as_secs_f64() * 1000.0;
@@ -559,7 +726,7 @@ pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String>
         let (capture_rect, region) = match &display_indices {
             None => (capture::virtual_screen_rect(), None),
             Some(indices) => {
-                let rect = display::get_display_union_rect(indices)?;
+                let rect = selected_rect.expect("selected display rectangle validated above");
                 let csv = indices
                     .iter()
                     .map(|i| i.to_string())
@@ -575,8 +742,8 @@ pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String>
         region_text = region;
 
         let backend = capture::resolve_backend();
+        let (captured, backend) = capture::capture_rect_with_backend(capture_rect, backend)?;
         backend_name = Some(backend.name());
-        let captured = capture::capture_rect(capture_rect, backend)?;
 
         let orig_width = captured.width();
         let orig_height = captured.height();
@@ -653,10 +820,16 @@ pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String>
         text += &format!("Screenshot Backend: {name}\n");
     }
 
+    let desktops = vdm::desktops();
+    let active_desktops: Vec<_> = desktops
+        .iter()
+        .filter(|desktop| desktop.active)
+        .cloned()
+        .collect();
     text += "\nActive Desktop:\n";
-    text += &desktop_table();
+    text += &desktop_table(&active_desktops);
     text += "\n\nAll Desktops:\n";
-    text += &desktop_table();
+    text += &desktop_table(&desktops);
 
     let focused_window_title = foreground.as_ref().map(|w| w.title.clone());
     text += "\n\nFocused Window:\n";
@@ -667,6 +840,21 @@ pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String>
     let opened_rows: Vec<Vec<String>> = table_windows
         .iter()
         .filter(|w| foreground.as_ref().map(|f| f.handle) != Some(w.handle))
+        .filter(|w| {
+            selected_rect.as_ref().is_none_or(|region| {
+                window::get_window_rect(w.handle).is_some_and(|(x, y, width, height)| {
+                    rects_intersect(
+                        &windows::Win32::Foundation::RECT {
+                            left: x,
+                            top: y,
+                            right: x + width,
+                            bottom: y + height,
+                        },
+                        region,
+                    )
+                })
+            })
+        })
         .enumerate()
         .map(|(i, w)| {
             window_titles.push(w.title.clone());
@@ -701,6 +889,9 @@ pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String>
         png_bytes,
         interactive_nodes,
         scrollable_nodes,
+        informative_nodes,
+        dom_found,
+        dom_scroll_percent,
         focused_window_title,
         window_titles,
     })
@@ -753,5 +944,25 @@ mod tests {
             format_tree_line(&node, "click"),
             "(10,20) button \"Submit\"  [action: click]"
         );
+    }
+
+    #[test]
+    fn display_filter_clips_nodes_and_recomputes_center() {
+        let node = state::ElementNode {
+            name: "partly visible".to_string(),
+            control_type: "button".to_string(),
+            center: (100, 100),
+            bounding_box: (0, 0, 200, 200),
+            has_focus: false,
+        };
+        let region = windows::Win32::Foundation::RECT {
+            left: 100,
+            top: 50,
+            right: 150,
+            bottom: 120,
+        };
+        let clipped = clip_node_to_rect(node, Some(&region)).unwrap();
+        assert_eq!(clipped.bounding_box, (100, 50, 150, 120));
+        assert_eq!(clipped.center, (125, 85));
     }
 }

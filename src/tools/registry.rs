@@ -220,6 +220,10 @@ fn delete_entry(path: &str, name: Option<&str>) -> String {
             }
         }
         None => {
+            if subpath.is_empty() {
+                return "Error deleting registry key: refusing to delete a registry hive root."
+                    .to_string();
+            }
             let (parent_subpath, leaf) = match subpath.rsplit_once('\\') {
                 Some((parent, leaf)) => (parent.to_string(), leaf.to_string()),
                 None => (String::new(), subpath.clone()),

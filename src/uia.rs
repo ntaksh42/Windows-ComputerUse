@@ -26,6 +26,7 @@ use windows::core::Result as WinResult;
 pub struct RawElement {
     pub control_type: i32,
     pub name: String,
+    pub automation_id: String,
     pub rect: RECT,
     pub is_enabled: bool,
     pub is_offscreen: bool,
@@ -36,6 +37,7 @@ pub struct RawElement {
     /// (presence, not scrollability direction — matches the task's
     /// "ScrollPattern の有無で判定" instruction).
     pub is_scrollable: bool,
+    pub vertical_scroll_percent: f64,
 }
 
 thread_local! {
@@ -82,6 +84,7 @@ pub const INTERACTIVE_CONTROL_TYPES: &[i32] = &[
 ];
 
 pub const WINDOW_CONTROL_TYPE: i32 = UIA_WindowControlTypeId.0;
+pub const DOCUMENT_CONTROL_TYPE: i32 = UIA_DocumentControlTypeId.0;
 
 /// Lower-cased display name for a `UIA_*ControlTypeId` value, used to render
 /// UI Tree lines (`(x,y) controltype "name" [action: ...]`).
@@ -169,10 +172,15 @@ fn variant_bool(value: bool) -> VARIANT {
 /// IsKeyboardFocusable/HasKeyboardFocus/AutomationId/ClassName, plus
 /// Invoke/Value/Toggle/Scroll/SelectionItem/ExpandCollapse/Window pattern
 /// availability) so every element read below is a `Cached*` read.
-pub fn build_cache_request(automation: &IUIAutomation) -> WinResult<IUIAutomationCacheRequest> {
+pub fn build_cache_request(
+    automation: &IUIAutomation,
+    tree_filter: &IUIAutomationCondition,
+) -> WinResult<IUIAutomationCacheRequest> {
     let cache = unsafe { automation.CreateCacheRequest()? };
     unsafe {
         cache.SetAutomationElementMode(AutomationElementMode_Full)?;
+        cache.SetTreeScope(TreeScope_Subtree)?;
+        cache.SetTreeFilter(tree_filter)?;
         for property in [
             UIA_NamePropertyId,
             UIA_ControlTypePropertyId,
@@ -228,6 +236,12 @@ pub fn build_condition(automation: &IUIAutomation) -> WinResult<IUIAutomationCon
     }
 }
 
+/// DOM capture needs informative text nodes as well as actionable controls,
+/// so it fetches the complete cached subtree in one cross-process call.
+pub fn build_dom_condition(automation: &IUIAutomation) -> WinResult<IUIAutomationCondition> {
+    unsafe { automation.CreateTrueCondition() }
+}
+
 /// Reads every `Cached*` member of `element` into a [`RawElement`]. Each
 /// property read is independently best-effort (defaults on failure) so one
 /// missing property doesn't drop the whole element.
@@ -236,6 +250,10 @@ unsafe fn read_element(element: &IUIAutomationElement) -> RawElement {
         let control_type = element.CachedControlType().map(|c| c.0).unwrap_or_default();
         let name = element
             .CachedName()
+            .map(|b| b.to_string())
+            .unwrap_or_default();
+        let automation_id = element
+            .CachedAutomationId()
             .map(|b| b.to_string())
             .unwrap_or_default();
         let rect = element.CachedBoundingRectangle().unwrap_or_default();
@@ -263,19 +281,26 @@ unsafe fn read_element(element: &IUIAutomationElement) -> RawElement {
             false
         };
 
-        let is_scrollable = element
+        let scroll_pattern = element
             .GetCachedPatternAs::<IUIAutomationScrollPattern>(UIA_ScrollPatternId)
-            .is_ok();
+            .ok();
+        let is_scrollable = scroll_pattern.is_some();
+        let vertical_scroll_percent = scroll_pattern
+            .and_then(|pattern| pattern.CachedVerticalScrollPercent().ok())
+            .filter(|percent| percent.is_finite() && *percent >= 0.0)
+            .unwrap_or(0.0);
 
         RawElement {
             control_type,
             name,
+            automation_id,
             rect,
             is_enabled,
             is_offscreen,
             has_keyboard_focus,
             is_modal,
             is_scrollable,
+            vertical_scroll_percent,
         }
     }
 }
@@ -284,25 +309,51 @@ unsafe fn read_element(element: &IUIAutomationElement) -> RawElement {
 /// call, returning the window's own (root) element plus every matching
 /// descendant, in document order.
 ///
-/// This is the hot path the CacheRequest design exists for: exactly two COM
-/// calls per window (`ElementFromHandleBuildCache` + `FindAllBuildCache`),
-/// then only `Cached*` reads.
+/// This is the hot path the CacheRequest design exists for: one subtree
+/// cache build per window, followed only by `Cached*` reads. A filtered
+/// `FindAllBuildCache` call is retained as a compatibility fallback.
 pub fn walk_window(
     automation: &IUIAutomation,
     cache_request: &IUIAutomationCacheRequest,
     condition: &IUIAutomationCondition,
     hwnd: HWND,
+    reverse_children: bool,
 ) -> WinResult<(RawElement, Vec<RawElement>)> {
     unsafe {
         let root = automation.ElementFromHandleBuildCache(hwnd, cache_request)?;
         let root_raw = read_element(&root);
-        let array = root.FindAllBuildCache(TreeScope_Subtree, condition, cache_request)?;
-        let len = array.Length()?.max(0) as usize;
-        let mut elements = Vec::with_capacity(len);
-        for i in 0..len as i32 {
-            let element = array.GetElement(i)?;
-            elements.push(read_element(&element));
+        let mut elements = Vec::new();
+        if collect_cached_children(&root, reverse_children, &mut elements).is_err() {
+            let array = root.FindAllBuildCache(TreeScope_Subtree, condition, cache_request)?;
+            let len = array.Length()?.max(0) as usize;
+            elements.reserve(len);
+            for i in 0..len as i32 {
+                let element = array.GetElement(i)?;
+                elements.push(read_element(&element));
+            }
         }
         Ok((root_raw, elements))
+    }
+}
+
+unsafe fn collect_cached_children(
+    element: &IUIAutomationElement,
+    reverse_children: bool,
+    output: &mut Vec<RawElement>,
+) -> WinResult<()> {
+    unsafe {
+        let array = element.GetCachedChildren()?;
+        let len = array.Length()?.max(0);
+        let indices: Box<dyn Iterator<Item = i32>> = if reverse_children {
+            Box::new((0..len).rev())
+        } else {
+            Box::new(0..len)
+        };
+        for index in indices {
+            let child = array.GetElement(index)?;
+            output.push(read_element(&child));
+            collect_cached_children(&child, reverse_children, output)?;
+        }
+        Ok(())
     }
 }

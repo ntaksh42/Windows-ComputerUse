@@ -6,6 +6,7 @@ use rmcp::{
     ErrorData as McpError, ServerHandler,
     handler::server::wrapper::Parameters,
     model::{CallToolResult, ContentBlock},
+    service::{RequestContext, RoleServer},
     tool, tool_handler, tool_router,
 };
 
@@ -172,12 +173,15 @@ impl WindowsComputerUseServer {
         &self,
         Parameters(params): Parameters<ScreenshotParams>,
     ) -> Result<CallToolResult, McpError> {
-        match screenshot::screenshot(&params) {
+        let result = tokio::task::spawn_blocking(move || screenshot::screenshot(&params))
+            .await
+            .unwrap_or_else(|e| Err(format!("Screenshot tool panicked: {e}")));
+        match result {
             Ok(output) => Ok(CallToolResult::success(vec![
                 ContentBlock::text(output.text),
                 ContentBlock::image(BASE64.encode(output.png_bytes), "image/png"),
             ])),
-            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+            Err(e) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "Error capturing screenshot: {e}. Please try again."
             ))])),
         }
@@ -202,7 +206,7 @@ impl WindowsComputerUseServer {
                 }
                 Ok(CallToolResult::success(content))
             }
-            Err(message) => Ok(CallToolResult::error(vec![ContentBlock::text(message)])),
+            Err(message) => Ok(CallToolResult::success(vec![ContentBlock::text(message)])),
         }
     }
 
@@ -239,8 +243,9 @@ impl WindowsComputerUseServer {
     async fn scrape(
         &self,
         Parameters(params): Parameters<ScrapeParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        match scrape::scrape(params).await {
+        match scrape::scrape(params, Some(&context.peer)).await {
             Ok(message) => Ok(CallToolResult::success(vec![ContentBlock::text(message)])),
             Err(message) => Ok(CallToolResult::error(vec![ContentBlock::text(message)])),
         }

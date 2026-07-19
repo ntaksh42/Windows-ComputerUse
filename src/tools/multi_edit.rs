@@ -37,6 +37,9 @@ pub fn multi_edit(params: MultiEditParams) -> Result<String, String> {
             entries.push((x, y, text));
         }
     }
+    if entries.is_empty() {
+        return Err("At least one loc or label entry must be provided.".to_string());
+    }
 
     for &(x, y, ref text) in &entries {
         typing::type_at(x, y, text, CaretPosition::Idle, true, false);

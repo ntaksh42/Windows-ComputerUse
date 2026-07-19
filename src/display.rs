@@ -226,6 +226,9 @@ pub fn get_display_union_rect(indices: &[usize]) -> Result<RECT, String> {
     if displays.is_empty() {
         return Err("No displays detected".to_string());
     }
+    if indices.is_empty() {
+        return Err("display must contain at least one display index".to_string());
+    }
 
     if let Some(&invalid) = indices
         .iter()

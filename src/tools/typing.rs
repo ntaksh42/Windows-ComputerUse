@@ -90,9 +90,9 @@ pub fn type_at(
     }
 
     let has_control_chars = text.contains(['\n', '\t', '{', '}']);
-    if text.chars().count() >= LONG_TEXT_PASTE_THRESHOLD && !has_control_chars {
-        paste_text(text);
-    } else {
+    let pasted =
+        text.chars().count() >= LONG_TEXT_PASTE_THRESHOLD && !has_control_chars && paste_text(text);
+    if !pasted {
         input_sim::type_text_char_by_char(text, TYPE_INTERVAL, KEY_WAIT);
     }
 
@@ -103,13 +103,19 @@ pub fn type_at(
 
 /// Stashes `text` on the clipboard, pastes via Ctrl+V, then restores the
 /// prior clipboard contents.
-fn paste_text(text: &str) {
+fn paste_text(text: &str) -> bool {
     let prior = input_sim::get_clipboard_text();
-    input_sim::set_clipboard_text(text);
+    if !input_sim::set_clipboard_text(text) {
+        return false;
+    }
     std::thread::sleep(PASTE_SETTLE_WAIT);
     input_sim::chord(&[VK_CONTROL.0, b'V' as u16], KEY_WAIT);
-    if let Some(prior) = prior {
-        std::thread::sleep(PASTE_SETTLE_WAIT);
-        input_sim::set_clipboard_text(&prior);
+    std::thread::sleep(PASTE_SETTLE_WAIT);
+    match prior {
+        Some(prior) => {
+            input_sim::set_clipboard_text(&prior);
+        }
+        None => input_sim::clear_clipboard(),
     }
+    true
 }

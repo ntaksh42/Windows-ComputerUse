@@ -36,9 +36,7 @@ pub struct WaitForParams {
         description = "Seconds between polling attempts (0 < interval <= 5). Defaults to 0.25."
     )]
     pub interval: Option<f64>,
-    #[schemars(
-        description = "Browser DOM extraction. Not implemented in this build; passing true returns an error."
-    )]
+    #[schemars(description = "Use browser DOM content while polling text and element conditions.")]
     pub use_dom: Option<BoolOrString>,
 }
 
@@ -96,6 +94,7 @@ fn evaluate_condition(
                 .interactive_nodes
                 .iter()
                 .chain(result.scrollable_nodes.iter())
+                .chain(result.informative_nodes.iter())
             {
                 if casefold_contains(&node.name, needle) {
                     return Some(format!("text '{needle}' found in element '{}'", node.name));
@@ -184,9 +183,6 @@ fn timeout_hint(condition: Condition, params: &WaitForParams) -> String {
 /// satisfied or `timeout` elapses.
 pub fn wait_for(params: WaitForParams) -> Result<String, String> {
     let use_dom = opt_bool(&params.use_dom, false)?;
-    if use_dom {
-        return Err("DOM mode not supported yet.".to_string());
-    }
 
     let condition = normalize_condition(&params.condition)?;
 
@@ -222,7 +218,7 @@ pub fn wait_for(params: WaitForParams) -> Result<String, String> {
 
     let snapshot_params = SnapshotParams {
         use_vision: Some(BoolOrString::Bool(false)),
-        use_dom: Some(BoolOrString::Bool(false)),
+        use_dom: Some(BoolOrString::Bool(use_dom)),
         use_annotation: Some(BoolOrString::Bool(false)),
         use_ui_tree: Some(BoolOrString::Bool(true)),
         width_reference_line: None,

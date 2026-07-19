@@ -74,8 +74,10 @@ fn virtual_screen_rect() -> (i32, i32, i32, i32) {
 /// for `MOUSEEVENTF_ABSOLUTE`, relative to the virtual screen origin.
 fn normalize_absolute(x: i32, y: i32) -> (i32, i32) {
     let (vx, vy, vw, vh) = virtual_screen_rect();
-    let nx = (x - vx) as i64 * 65535 / vw as i64;
-    let ny = (y - vy) as i64 * 65535 / vh as i64;
+    let nx = (x - vx) as i64 * 65535 / (vw - 1).max(1) as i64;
+    let ny = (y - vy) as i64 * 65535 / (vh - 1).max(1) as i64;
+    let nx = nx.clamp(0, 65535);
+    let ny = ny.clamp(0, 65535);
     (nx as i32, ny as i32)
 }
 
@@ -358,6 +360,16 @@ pub fn set_clipboard_text(text: &str) -> bool {
         .is_some();
         let _ = CloseClipboard();
         ok
+    }
+}
+
+/// Restores the clipboard to an empty state.
+pub fn clear_clipboard() {
+    unsafe {
+        if OpenClipboard(None).is_ok() {
+            let _ = EmptyClipboard();
+            let _ = CloseClipboard();
+        }
     }
 }
 

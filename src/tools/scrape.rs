@@ -1,43 +1,35 @@
 //! `Scrape` tool: fetches a URL over HTTP(S) and converts its HTML body to
 //! Markdown, with per-hop SSRF protection on manually-followed redirects.
+#![allow(deprecated)] // required by docs/SPEC.md; rmcp marks MCP sampling deprecated
 //!
-//! `use_dom` and `use_sampling` are accepted for API compatibility with the
-//! Python reference implementation but are not yet supported: `use_dom=true`
-//! returns a fixed "not supported yet" message, and sampling is skipped
-//! (raw Markdown is always returned).
-
 use std::net::IpAddr;
 use std::time::Duration;
 
 use reqwest::Url;
 use reqwest::redirect::Policy;
-use rmcp::schemars;
+use rmcp::model::{CreateMessageRequestParams, SamplingMessage};
+use rmcp::{Peer, RoleServer, schemars};
 use serde::Deserialize;
 
 use crate::params::{BoolOrString, opt_bool};
+use crate::tools::snapshot::{self, SnapshotParams};
 
 const MAX_REDIRECTS: usize = 5;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Parameters for the `Scrape` tool.
 ///
-/// `query` and `use_sampling` are accepted for API compatibility with the
-/// Python reference implementation but are not read: sampling-based
-/// summarization is not yet implemented, so raw Markdown is always returned.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-#[allow(dead_code)]
 pub struct ScrapeParams {
     /// The URL to fetch.
     #[schemars(description = "The URL to fetch.")]
     pub url: String,
-    /// Optional focus query (currently unused; sampling is not yet implemented).
+    /// Optional focus query for sampled extraction.
     pub query: Option<String>,
     /// Extract from the active browser tab's DOM instead of an HTTP request.
-    /// Not yet supported.
     #[serde(default)]
     pub use_dom: Option<BoolOrString>,
-    /// Summarize the content via MCP sampling. Not yet implemented; raw
-    /// Markdown is always returned.
+    /// Summarize the content via MCP sampling. Defaults to true.
     #[serde(default)]
     pub use_sampling: Option<BoolOrString>,
 }
@@ -48,14 +40,108 @@ pub struct ScrapeParams {
 /// caller-facing error message for unexpected failures (invalid/blocked
 /// URLs, connection failures) which the caller should surface as an MCP
 /// `isError` result.
-pub async fn scrape(params: ScrapeParams) -> Result<String, String> {
+pub async fn scrape(
+    params: ScrapeParams,
+    peer: Option<&Peer<RoleServer>>,
+) -> Result<String, String> {
     let use_dom = opt_bool(&params.use_dom, false)?;
-    if use_dom {
-        return Ok("DOM mode not supported yet. Use Snapshot instead.".to_string());
+    let use_sampling = opt_bool(&params.use_sampling, true)?;
+
+    let content = if use_dom {
+        let (content, found) = scrape_dom(&params.url).await?;
+        if !found {
+            return Ok(content);
+        }
+        content
+    } else {
+        fetch_markdown(&params.url).await?
+    };
+
+    if use_sampling
+        && let Some(peer) = peer
+        && let Some(sampled) =
+            sample_content(peer, &params.url, params.query.as_deref(), &content).await
+    {
+        return Ok(format!("URL: {}\nContent:\n{sampled}", params.url));
     }
 
-    let content = fetch_markdown(&params.url).await?;
     Ok(format!("URL: {}\nContent:\n{content}", params.url))
+}
+
+async fn scrape_dom(url: &str) -> Result<(String, bool), String> {
+    let params = SnapshotParams {
+        use_vision: Some(BoolOrString::Bool(false)),
+        use_dom: Some(BoolOrString::Bool(true)),
+        use_annotation: Some(BoolOrString::Bool(false)),
+        use_ui_tree: Some(BoolOrString::Bool(true)),
+        width_reference_line: None,
+        height_reference_line: None,
+        display: None,
+    };
+    let result = tokio::task::spawn_blocking(move || snapshot::capture(&params))
+        .await
+        .map_err(|e| format!("DOM capture task failed: {e}"))??;
+    if !result.dom_found {
+        return Ok((
+            format!("No DOM information found. Please open {url} in browser first."),
+            false,
+        ));
+    }
+    let text = result
+        .informative_nodes
+        .iter()
+        .map(|node| node.name.as_str())
+        .filter(|text| !text.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let header = if result.dom_scroll_percent <= 0.0 {
+        "Reached top"
+    } else {
+        "Scroll up to see more"
+    };
+    let footer = if result.dom_scroll_percent >= 100.0 {
+        "Reached bottom"
+    } else {
+        "Scroll down to see more"
+    };
+    Ok((format!("{header}\n{text}\n{footer}"), true))
+}
+
+async fn sample_content(
+    peer: &Peer<RoleServer>,
+    url: &str,
+    query: Option<&str>,
+    content: &str,
+) -> Option<String> {
+    if peer
+        .peer_info()
+        .is_none_or(|info| info.capabilities.sampling.is_none())
+    {
+        return None;
+    }
+    let focus = query
+        .map(|query| format!(" Focus specifically on: {query}."))
+        .unwrap_or_default();
+    let system_prompt = format!(
+        "You are a web content extractor. Given raw webpage content, extract and present only the meaningful information in clean, concise prose or structured format. Strip out navigation menus, cookie banners, ads, footer links, and all other boilerplate. Preserve important data, facts, and structure.{focus}"
+    );
+    let request = CreateMessageRequestParams::new(
+        vec![SamplingMessage::user_text(format!(
+            "Raw scraped content from {url}:\n\n{content}"
+        ))],
+        2048,
+    )
+    .with_system_prompt(system_prompt);
+    let result = peer.create_message(request).await.ok()?;
+    let text = result
+        .message
+        .content
+        .iter()
+        .filter_map(|block| block.as_text())
+        .map(|text| text.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.is_empty()).then_some(text)
 }
 
 async fn fetch_markdown(url: &str) -> Result<String, String> {
@@ -67,7 +153,7 @@ async fn fetch_markdown(url: &str) -> Result<String, String> {
 
     let mut current = url.to_string();
     let mut response = None;
-    for _ in 0..MAX_REDIRECTS {
+    for redirect_count in 0..=MAX_REDIRECTS {
         validate_url(&current).await?;
 
         let resp = client
@@ -77,6 +163,9 @@ async fn fetch_markdown(url: &str) -> Result<String, String> {
             .map_err(|e| format!("Error: Failed to connect to {current}: {e}"))?;
 
         if resp.status().is_redirection() {
+            if redirect_count == MAX_REDIRECTS {
+                return Err("Error: Too many redirects while fetching URL".to_string());
+            }
             let location = resp
                 .headers()
                 .get(reqwest::header::LOCATION)
@@ -163,20 +252,32 @@ async fn validate_url(url: &str) -> Result<(), String> {
 fn is_blocked_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
+            let octets = v4.octets();
             v4.is_private()
                 || v4.is_loopback()
                 || v4.is_link_local()
                 || v4.is_multicast()
                 || v4.is_unspecified()
                 || v4.is_broadcast()
-                || v4.octets()[0] == 240 // 240.0.0.0/4: reserved for future use
+                || octets[0] == 0
+                || octets[0] >= 240
+                || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+                || (octets[0] == 192 && matches!(octets[1..], [0, 0, _] | [0, 2, _] | [88, 99, _]))
+                || (octets[0] == 198
+                    && (octets[1] == 18 || octets[1] == 19 || octets[1] == 51 && octets[2] == 100))
+                || (octets[0] == 203 && octets[1] == 0 && octets[2] == 113)
         }
         IpAddr::V6(v6) => {
-            v6.is_loopback()
+            v6.to_ipv4_mapped()
+                .is_some_and(|v4| is_blocked_ip(IpAddr::V4(v4)))
+                || v6.is_loopback()
                 || v6.is_multicast()
                 || v6.is_unspecified()
                 || (v6.segments()[0] & 0xfe00) == 0xfc00 // fc00::/7: unique local
                 || (v6.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10: link-local
+                || (v6.segments()[0] == 0x2001 && v6.segments()[1] == 0x0db8)
+                || (v6.segments()[0] == 0x0100
+                    && v6.segments()[1..].iter().all(|segment| *segment == 0))
         }
     }
 }
@@ -206,5 +307,25 @@ mod tests {
     fn blocks_private_ipv6() {
         assert!(is_blocked_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
         assert!(is_blocked_ip(IpAddr::V6(Ipv6Addr::UNSPECIFIED)));
+        assert!(is_blocked_ip(IpAddr::V6(
+            "::ffff:127.0.0.1".parse().unwrap()
+        )));
+        assert!(is_blocked_ip(IpAddr::V6("2001:db8::1".parse().unwrap())));
+    }
+
+    #[test]
+    fn blocks_reserved_ipv4() {
+        for address in [
+            "100.64.0.1",
+            "192.0.2.1",
+            "198.18.0.1",
+            "198.51.100.1",
+            "203.0.113.1",
+        ] {
+            assert!(
+                is_blocked_ip(IpAddr::V4(address.parse().unwrap())),
+                "{address}"
+            );
+        }
     }
 }

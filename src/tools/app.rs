@@ -67,6 +67,9 @@ pub fn app(params: AppParams) -> Result<String, String> {
     if mode != AppMode::LaunchExecutable && has_exact_launch_inputs {
         return Err(r#"executable, args, and cwd require mode="launch_executable""#.to_string());
     }
+    if mode != AppMode::Resize && (window_loc.is_some() || window_size.is_some()) {
+        return Err(r#"window_loc and window_size require mode="resize""#.to_string());
+    }
 
     if mode == AppMode::LaunchExecutable {
         let Some(executable) = executable else {
@@ -106,16 +109,16 @@ fn launch(name: Option<&str>) -> String {
     let Some(name) = name else {
         return r#"name is required for mode="launch""#.to_string();
     };
-    let (response, status, pid) = apps::launch_app(name);
+    let (response, status, pid, matched_name) = apps::launch_app(name);
     if status != 0 {
         return response;
     }
-    if window::wait_for_window(pid, name, Duration::from_secs(10)) {
-        format!("{} launched.", title_case(name))
+    if window::wait_for_window(pid, &matched_name, Duration::from_secs(10)) {
+        format!("{} launched.", title_case(&matched_name))
     } else {
         format!(
             "Launching {} sent, but window not detected yet.",
-            title_case(name)
+            title_case(&matched_name)
         )
     }
 }
@@ -214,7 +217,10 @@ fn resolve_executable(executable: &str) -> Result<String, String> {
     if !absolute.is_file() {
         return Err(format!("Executable does not exist: {}", absolute.display()));
     }
-    Ok(absolute.display().to_string())
+    Ok(std::fs::canonicalize(&absolute)
+        .unwrap_or(absolute)
+        .display()
+        .to_string())
 }
 
 fn resolve_cwd(cwd: &str) -> Result<String, String> {
@@ -227,5 +233,27 @@ fn resolve_cwd(cwd: &str) -> Result<String, String> {
             absolute.display()
         ));
     }
-    Ok(absolute.display().to_string())
+    Ok(std::fs::canonicalize(&absolute)
+        .unwrap_or(absolute)
+        .display()
+        .to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_resize_parameters_in_launch_mode() {
+        let result = app(AppParams {
+            mode: AppMode::Launch,
+            name: Some("anything".to_string()),
+            window_loc: Some(ListOrString::List(vec![0, 0])),
+            window_size: None,
+            executable: None,
+            args: None,
+            cwd: None,
+        });
+        assert!(result.unwrap_err().contains("require mode=\"resize\""));
+    }
 }

@@ -76,7 +76,21 @@ pub fn scroll(params: ScrollParams) -> Result<String, String> {
     let point = resolve_point_optional(params.loc, params.label)?;
     let scroll_type = params.scroll_type.unwrap_or(ScrollType::Vertical);
     let direction = params.direction.unwrap_or(ScrollDirection::Down);
-    let wheel_times = params.wheel_times.unwrap_or(1) as i32;
+    let wheel_times = match i32::try_from(params.wheel_times.unwrap_or(1)) {
+        Ok(value) if value >= 0 => value,
+        _ => return Ok("wheel_times must be a non-negative 32-bit integer.".to_string()),
+    };
+
+    if scroll_type == ScrollType::Vertical
+        && !matches!(direction, ScrollDirection::Up | ScrollDirection::Down)
+    {
+        return Ok(r#"Invalid direction. Use "up" or "down"."#.to_string());
+    }
+    if scroll_type == ScrollType::Horizontal
+        && !matches!(direction, ScrollDirection::Left | ScrollDirection::Right)
+    {
+        return Ok(r#"Invalid direction. Use "left" or "right"."#.to_string());
+    }
 
     if let Some((x, y)) = point {
         input_sim::move_smooth(x, y, 10.0, MOVE_WAIT);
@@ -89,9 +103,7 @@ pub fn scroll(params: ScrollParams) -> Result<String, String> {
         (ScrollType::Vertical, ScrollDirection::Down) => {
             input_sim::wheel(-wheel_times, NOTCH_INTERVAL, WHEEL_TRAILING_WAIT);
         }
-        (ScrollType::Vertical, _) => {
-            return Err(r#"Invalid direction. Use "up" or "down"."#.to_string());
-        }
+        (ScrollType::Vertical, _) => unreachable!("direction validated above"),
         (ScrollType::Horizontal, ScrollDirection::Left) => {
             input_sim::key_down(VK_SHIFT.0);
             std::thread::sleep(SHIFT_KEY_WAIT);
@@ -108,9 +120,7 @@ pub fn scroll(params: ScrollParams) -> Result<String, String> {
             input_sim::key_up(VK_SHIFT.0);
             std::thread::sleep(SHIFT_KEY_WAIT);
         }
-        (ScrollType::Horizontal, _) => {
-            return Err(r#"Invalid direction. Use "left" or "right"."#.to_string());
-        }
+        (ScrollType::Horizontal, _) => unreachable!("direction validated above"),
     }
 
     let (x, y) = point.unwrap_or_else(input_sim::get_cursor_pos);
