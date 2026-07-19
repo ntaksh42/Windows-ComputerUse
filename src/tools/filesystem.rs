@@ -23,7 +23,9 @@ const MAX_RESULTS: usize = 500;
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct FileSystemParams {
     /// Operation to perform.
-    #[schemars(description = "Operation: read, write, copy, move, delete, list, search, info.")]
+    #[schemars(
+        description = "Operation: read, write, edit, copy, move, delete, list, search, info."
+    )]
     pub mode: FileSystemMode,
     /// Target path. Relative paths resolve against the Desktop folder.
     #[schemars(description = "Target path. Relative paths resolve against the Desktop folder.")]
@@ -34,9 +36,15 @@ pub struct FileSystemParams {
     /// Content to write for write mode.
     #[schemars(description = "Content to write (required for write mode).")]
     pub content: Option<String>,
+    /// Exact text to replace in edit mode.
+    pub old_text: Option<String>,
+    /// Replacement text for edit mode.
+    pub new_text: Option<String>,
     /// Glob pattern for search (required) or list (optional) mode.
     #[schemars(description = "Glob pattern for search (required) or list (optional) mode.")]
     pub pattern: Option<String>,
+    /// Regular expression searched within glob-matching files in search mode.
+    pub content_pattern: Option<String>,
     /// Recurse into subdirectories (list/search) or delete non-empty directories.
     #[serde(default)]
     #[schemars(
@@ -63,6 +71,9 @@ pub struct FileSystemParams {
     #[serde(default)]
     #[schemars(description = "Include dotfile entries in list mode.")]
     pub show_hidden: Option<BoolOrString>,
+    /// Preview delete targets without removing them.
+    #[serde(default)]
+    pub dry_run: Option<BoolOrString>,
 }
 
 fn default_encoding() -> String {
@@ -75,6 +86,7 @@ fn default_encoding() -> String {
 pub enum FileSystemMode {
     Read,
     Write,
+    Edit,
     Copy,
     Move,
     Delete,
@@ -105,6 +117,10 @@ pub fn file_system(params: FileSystemParams) -> String {
         Ok(v) => v,
         Err(e) => return format!("Error: {e}"),
     };
+    let dry_run = match opt_bool(&params.dry_run, false) {
+        Ok(v) => v,
+        Err(e) => return format!("Error: {e}"),
+    };
 
     let Some(encoding) = encoding_rs::Encoding::for_label(params.encoding.as_bytes()) else {
         return format!("Error: Unsupported encoding \"{}\".", params.encoding);
@@ -123,6 +139,10 @@ pub fn file_system(params: FileSystemParams) -> String {
             None => "Error: content parameter is required for write mode.".to_string(),
             Some(content) => write_file(&path, &content, append, encoding),
         },
+        FileSystemMode::Edit => match (params.old_text, params.new_text) {
+            (Some(old_text), Some(new_text)) => edit_file(&path, &old_text, &new_text, encoding),
+            _ => "Error: old_text and new_text parameters are required for edit mode.".to_string(),
+        },
         FileSystemMode::Copy => match destination {
             None => "Error: destination parameter is required for copy mode.".to_string(),
             Some(dst) => copy_path(&path, &dst, overwrite),
@@ -131,13 +151,19 @@ pub fn file_system(params: FileSystemParams) -> String {
             None => "Error: destination parameter is required for move mode.".to_string(),
             Some(dst) => move_path(&path, &dst, overwrite),
         },
-        FileSystemMode::Delete => delete_path(&path, recursive),
+        FileSystemMode::Delete => delete_path(&path, recursive, dry_run),
         FileSystemMode::List => {
             list_directory(&path, params.pattern.as_deref(), recursive, show_hidden)
         }
         FileSystemMode::Search => match params.pattern {
             None => "Error: pattern parameter is required for search mode.".to_string(),
-            Some(pattern) => search_files(&path, &pattern, recursive),
+            Some(pattern) => search_files(
+                &path,
+                &pattern,
+                params.content_pattern.as_deref(),
+                recursive,
+                encoding,
+            ),
         },
         FileSystemMode::Info => get_file_info(&path),
     }
@@ -206,7 +232,12 @@ fn read_file(
     if offset.is_some() || limit.is_some() {
         let lines: Vec<&str> = split_keep_newlines(&text);
         let total = lines.len();
-        let start = ((offset.unwrap_or(1) - 1).max(0)) as usize;
+        let requested_offset = offset.unwrap_or(1);
+        let start = if requested_offset < 0 {
+            total.saturating_sub(requested_offset.unsigned_abs() as usize)
+        } else {
+            (requested_offset - 1).max(0) as usize
+        };
         let end = match limit {
             Some(l) => start.saturating_add(l.max(0) as usize),
             None => total,
@@ -224,6 +255,63 @@ fn read_file(
     } else {
         format!("File: {}\n{}", path.display(), text)
     }
+}
+
+fn edit_file(
+    path: &Path,
+    old_text: &str,
+    new_text: &str,
+    encoding: &'static encoding_rs::Encoding,
+) -> String {
+    if old_text.is_empty() {
+        return "Error: old_text must not be empty.".to_string();
+    }
+    if !path.is_file() {
+        return format!("Error: File not found: {}", path.display());
+    }
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) => return read_error(&error, path),
+    };
+    if bytes.len() as u64 > MAX_READ_SIZE {
+        return format!(
+            "Error: File too large ({} bytes).",
+            with_commas(bytes.len() as u64)
+        );
+    }
+    let text = decode_text(&bytes, encoding);
+    let count = text.match_indices(old_text).count();
+    if count == 0 {
+        let closest = closest_line(&text, old_text)
+            .map(|(number, line)| format!(" Closest line: {number}: {line}"))
+            .unwrap_or_default();
+        return format!(
+            "Error: old_text was not found in {}.{closest}",
+            path.display()
+        );
+    }
+    if count > 1 {
+        return format!(
+            "Error: old_text matched {count} occurrences in {}; expected exactly one.",
+            path.display()
+        );
+    }
+    let updated = text.replacen(old_text, new_text, 1);
+    let encoded = encode_text(&updated, encoding);
+    match fs::write(path, encoded.as_ref()) {
+        Ok(()) => format!("Edited {} (1 replacement)", path.display()),
+        Err(error) => write_error(&error, path),
+    }
+}
+
+fn closest_line<'a>(text: &'a str, needle: &str) -> Option<(usize, &'a str)> {
+    text.lines()
+        .enumerate()
+        .max_by(|(_, left), (_, right)| {
+            strsim::normalized_levenshtein(left, needle)
+                .total_cmp(&strsim::normalized_levenshtein(right, needle))
+        })
+        .map(|(index, line)| (index + 1, line))
 }
 
 /// Splits `text` into lines, keeping the trailing newline on each (mirrors
@@ -450,7 +538,7 @@ fn move_error(e: &io::Error) -> String {
     }
 }
 
-fn delete_path(path: &Path, recursive: bool) -> String {
+fn delete_path(path: &Path, recursive: bool, dry_run: bool) -> String {
     if !path.exists() {
         return format!("Error: Path not found: {}", path.display());
     }
@@ -459,6 +547,29 @@ fn delete_path(path: &Path, recursive: bool) -> String {
         Ok(m) => m,
         Err(e) => return delete_error(&e, path),
     };
+
+    if dry_run {
+        let mut targets = vec![path.to_path_buf()];
+        if meta.is_dir() && recursive {
+            match walk(path, true) {
+                Ok(entries) => targets.extend(entries.into_iter().map(|(path, _)| path)),
+                Err(error) => return delete_error(&error, path),
+            }
+        }
+        let total = targets.len();
+        let mut lines: Vec<String> = targets
+            .iter()
+            .take(MAX_RESULTS)
+            .map(|target| target.display().to_string())
+            .collect();
+        if total > MAX_RESULTS {
+            lines.push(format!("... (truncated, {MAX_RESULTS}+ targets)"));
+        }
+        return format!(
+            "Dry run: would delete {total} target(s):\n{}",
+            lines.join("\n")
+        );
+    }
 
     if meta.is_file() || meta.file_type().is_symlink() {
         match fs::remove_file(path) {
@@ -627,7 +738,13 @@ fn list_error(e: &io::Error, path: &Path) -> String {
     }
 }
 
-fn search_files(path: &Path, pattern: &str, recursive: bool) -> String {
+fn search_files(
+    path: &Path,
+    pattern: &str,
+    content_pattern: Option<&str>,
+    recursive: bool,
+    encoding: &'static encoding_rs::Encoding,
+) -> String {
     if !path.exists() {
         return format!("Error: Search path not found: {}", path.display());
     }
@@ -651,6 +768,41 @@ fn search_files(path: &Path, pattern: &str, recursive: bool) -> String {
             .cmp(&!b_is_dir)
             .then_with(|| sort_key(a).cmp(&sort_key(b)))
     });
+
+    if let Some(content_pattern) = content_pattern {
+        let regex = match regex::Regex::new(content_pattern) {
+            Ok(regex) => regex,
+            Err(error) => return format!("Error: Invalid content_pattern regex: {error}"),
+        };
+        let mut matches = Vec::new();
+        let mut total = 0usize;
+        for (entry_path, is_dir) in raw {
+            if is_dir {
+                continue;
+            }
+            let Ok(bytes) = fs::read(&entry_path) else {
+                continue;
+            };
+            let text = decode_text(&bytes, encoding);
+            for (index, line) in text.lines().enumerate() {
+                if regex.is_match(line) {
+                    total += 1;
+                    if matches.len() < MAX_RESULTS {
+                        matches.push(format!("{}:{}: {}", entry_path.display(), index + 1, line));
+                    }
+                }
+            }
+        }
+        if total == 0 {
+            return format!(
+                "No content matches found for /{content_pattern}/ in files matching \"{pattern}\""
+            );
+        }
+        if total > MAX_RESULTS {
+            matches.push(format!("... (truncated, {MAX_RESULTS}+ matches)"));
+        }
+        return matches.join("\n");
+    }
 
     if raw.is_empty() {
         return format!("No matches found for \"{pattern}\" in {}", path.display());
@@ -905,5 +1057,60 @@ mod tests {
         let read = read_file(&path, None, None, encoding);
         assert!(read.ends_with("hello 世界"));
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn negative_offset_reads_from_end() {
+        let path = std::env::temp_dir().join(format!(
+            "windows-computeruse-tail-test-{}.txt",
+            std::process::id()
+        ));
+        fs::write(&path, "one\ntwo\nthree\n").unwrap();
+        let result = read_file(&path, Some(-2), None, encoding_rs::UTF_8);
+        assert!(result.ends_with("two\nthree\n"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn edit_requires_exactly_one_match() {
+        let path = std::env::temp_dir().join(format!(
+            "windows-computeruse-edit-test-{}.txt",
+            std::process::id()
+        ));
+        fs::write(&path, "alpha\nbeta\n").unwrap();
+        assert!(edit_file(&path, "beta", "gamma", encoding_rs::UTF_8).starts_with("Edited"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "alpha\ngamma\n");
+        let missing = edit_file(&path, "gama", "delta", encoding_rs::UTF_8);
+        assert!(missing.contains("Closest line: 2: gamma"));
+        fs::write(&path, "same same").unwrap();
+        assert!(edit_file(&path, "same", "new", encoding_rs::UTF_8).contains("2 occurrences"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn delete_dry_run_preserves_targets() {
+        let dir = std::env::temp_dir().join(format!(
+            "windows-computeruse-delete-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("keep.txt"), "keep").unwrap();
+        let result = delete_path(&dir, true, true);
+        assert!(result.starts_with("Dry run:"));
+        assert!(dir.join("keep.txt").exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn content_search_reports_path_and_line() {
+        let dir = std::env::temp_dir().join(format!(
+            "windows-computeruse-search-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("notes.txt"), "alpha\nerror 42\n").unwrap();
+        let result = search_files(&dir, "*.txt", Some(r"error \d+"), false, encoding_rs::UTF_8);
+        assert!(result.contains("notes.txt:2: error 42"));
+        fs::remove_dir_all(dir).unwrap();
     }
 }

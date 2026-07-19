@@ -241,7 +241,7 @@ impl WindowsComputerUseServer {
 
     #[tool(
         name = "FileSystem",
-        description = "Manages file system operations with eight modes: 'read' (read text file contents with optional line offset/limit), 'write' (create or overwrite a file, set append=true to append), 'copy' (copy file or directory to destination), 'move' (move or rename file/directory), 'delete' (delete file or directory, set recursive=true for non-empty dirs), 'list' (list directory contents with optional pattern filter), 'search' (find files matching a glob pattern), 'info' (get file/directory metadata like size, dates, type). Relative paths are resolved from the user's Desktop folder. Use absolute paths to access other locations."
+        description = "Manages file system operations: 'read' (supports negative tail offsets), 'write', 'edit' (unique exact replacement), 'copy', 'move', 'delete' (supports recursive and dry_run), 'list', 'search' (glob plus optional content_pattern regex), and 'info'. Relative paths are resolved from the user's Desktop folder. Use absolute paths to access other locations."
     )]
     async fn file_system(
         &self,
