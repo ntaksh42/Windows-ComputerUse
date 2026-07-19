@@ -81,7 +81,7 @@ fn default_encoding() -> String {
 }
 
 /// `FileSystem` operation mode.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Deserialize, schemars::JsonSchema, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum FileSystemMode {
     Read,
@@ -133,6 +133,28 @@ pub fn file_system(params: FileSystemParams) -> String {
         .as_deref()
         .map(|d| resolve_path(d, &base));
 
+    if !sensitive_files_allowed()
+        && matches!(
+            params.mode,
+            FileSystemMode::Read
+                | FileSystemMode::Write
+                | FileSystemMode::Edit
+                | FileSystemMode::Copy
+                | FileSystemMode::Move
+                | FileSystemMode::Delete
+        )
+    {
+        if is_sensitive_path(&path) {
+            return sensitive_denied(&path);
+        }
+        if matches!(params.mode, FileSystemMode::Copy | FileSystemMode::Move)
+            && let Some(destination) = destination.as_deref()
+            && is_sensitive_path(destination)
+        {
+            return sensitive_denied(destination);
+        }
+    }
+
     match params.mode {
         FileSystemMode::Read => read_file(&path, params.offset, params.limit, encoding),
         FileSystemMode::Write => match params.content {
@@ -167,6 +189,32 @@ pub fn file_system(params: FileSystemParams) -> String {
         },
         FileSystemMode::Info => get_file_info(&path),
     }
+}
+
+fn sensitive_files_allowed() -> bool {
+    std::env::var("WINDOWS_MCP_ALLOW_SENSITIVE_FILES").as_deref() == Ok("1")
+}
+
+fn is_sensitive_path(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    name.starts_with(".env")
+        || name.starts_with("id_rsa")
+        || name.starts_with("credentials")
+        || ["pem", "key", "pfx"].iter().any(|extension| {
+            path.extension()
+                .is_some_and(|value| value.eq_ignore_ascii_case(extension))
+        })
+}
+
+fn sensitive_denied(path: &Path) -> String {
+    format!(
+        "Error: access to sensitive file denied: {}. Set WINDOWS_MCP_ALLOW_SENSITIVE_FILES=1 to allow.",
+        path.display()
+    )
 }
 
 /// Resolves the user's Desktop directory, falling back to the current
@@ -1112,5 +1160,14 @@ mod tests {
         let result = search_files(&dir, "*.txt", Some(r"error \d+"), false, encoding_rs::UTF_8);
         assert!(result.contains("notes.txt:2: error 42"));
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn sensitive_file_names_are_matched_case_insensitively() {
+        assert!(is_sensitive_path(Path::new(".env.local")));
+        assert!(is_sensitive_path(Path::new("ID_RSA.pub")));
+        assert!(is_sensitive_path(Path::new("server.PEM")));
+        assert!(is_sensitive_path(Path::new("credentials.json")));
+        assert!(!is_sensitive_path(Path::new("environment.txt")));
     }
 }
