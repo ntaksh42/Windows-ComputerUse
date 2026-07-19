@@ -164,6 +164,7 @@ pub struct SnapshotOutput {
 /// Internal capture result: the public [`SnapshotOutput`] plus the raw
 /// element lists WaitFor polls and Snapshot writes into `state.rs`.
 pub(crate) struct SnapshotResult {
+    pub generation: u32,
     pub text: String,
     pub png_bytes: Option<Vec<u8>>,
     pub interactive_nodes: Vec<state::ElementNode>,
@@ -178,6 +179,7 @@ pub(crate) struct SnapshotResult {
 impl SnapshotResult {
     pub(crate) fn to_desktop_state(&self) -> state::DesktopState {
         state::DesktopState {
+            generation: self.generation,
             interactive_nodes: self.interactive_nodes.clone(),
             scrollable_nodes: self.scrollable_nodes.clone(),
         }
@@ -253,9 +255,24 @@ fn walk_window_with_retry(
 }
 
 fn format_tree_line(node: &state::ElementNode, action: &str) -> String {
+    let actions = node
+        .supported_actions
+        .iter()
+        .map(|action| action.name())
+        .collect::<Vec<_>>()
+        .join(",");
+    let parent = node
+        .parent_id
+        .map_or_else(|| "none".to_string(), |id| id.to_string());
     format!(
-        "({},{}) {} \"{}\"  [action: {action}]",
-        node.center.0, node.center.1, node.control_type, node.name
+        "({},{}) {} \"{}\"  [id={}, parent={}, actions={}, action: {action}]",
+        node.center.0,
+        node.center.1,
+        node.control_type,
+        node.name,
+        node.element_id,
+        parent,
+        actions
     )
 }
 
@@ -266,12 +283,27 @@ fn format_informative_line(node: &state::ElementNode) -> String {
     )
 }
 
-fn raw_to_node(el: &uia::RawElement) -> Option<state::ElementNode> {
+fn raw_to_node(
+    el: &uia::RawElement,
+    generation: u32,
+    owner_handle: isize,
+    element_index: usize,
+    window_element_base: usize,
+) -> Option<state::ElementNode> {
     let (left, top, right, bottom) = (el.rect.left, el.rect.top, el.rect.right, el.rect.bottom);
     if right <= left || bottom <= top {
         return None;
     }
     Some(state::ElementNode {
+        element_id: state::element_id(generation, window_element_base + element_index),
+        parent_id: el
+            .parent_index
+            .map(|index| state::element_id(generation, window_element_base + index)),
+        generation,
+        owner_handle,
+        runtime_id: el.runtime_id.clone(),
+        automation_id: el.automation_id.clone(),
+        supported_actions: el.supported_actions.clone(),
         name: el.name.clone(),
         control_type: uia::control_type_name(el.control_type),
         center: (left + (right - left) / 2, top + (bottom - top) / 2),
@@ -602,6 +634,7 @@ fn draw_annotations(
 /// assembles the response text. Returns a caller-facing error message (not
 /// yet wrapped with "Error capturing desktop state: ...").
 pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String> {
+    let generation = state::next_generation();
     let scan_options =
         ScanOptions::resolve(params.scope, params.window.clone(), params.timeout_ms)?;
     let use_vision = opt_bool(&params.use_vision, false)?;
@@ -649,6 +682,7 @@ pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String>
     let mut dom_scroll_percent = 0.0;
     let mut window_trees: Vec<WindowTree> = Vec::new();
     let mut uia_truncated = false;
+    let mut window_element_base = 0usize;
 
     if use_ui_tree && !walk_windows.is_empty() {
         uia::ensure_com_initialized()?;
@@ -712,6 +746,7 @@ pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String>
             let mut local_scrollable: Vec<state::ElementNode> = Vec::new();
             let mut local_informative: Vec<state::ElementNode> = Vec::new();
 
+            let element_count = elements.len();
             let dom_root = if use_dom && win.is_browser() {
                 elements.iter().position(|el| {
                     el.automation_id == "RootWebArea"
@@ -753,9 +788,14 @@ pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String>
                     }
                     continue;
                 }
-                let Some(node) = raw_to_node(&el)
-                    .and_then(|node| clip_node_to_rect(node, selected_rect.as_ref()))
-                else {
+                let Some(node) = raw_to_node(
+                    &el,
+                    generation,
+                    win.handle,
+                    element_index,
+                    window_element_base,
+                )
+                .and_then(|node| clip_node_to_rect(node, selected_rect.as_ref())) else {
                     continue;
                 };
                 let is_interactive_type = uia::INTERACTIVE_CONTROL_TYPES.contains(&el.control_type);
@@ -787,6 +827,13 @@ pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String>
                         continue;
                     }
                     let node = state::ElementNode {
+                        element_id: 0,
+                        parent_id: None,
+                        generation,
+                        owner_handle: win.handle,
+                        runtime_id: Vec::new(),
+                        automation_id: String::new(),
+                        supported_actions: Vec::new(),
                         name: element.name,
                         control_type: element.control_type,
                         center: (
@@ -839,6 +886,7 @@ pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String>
             interactive_nodes.extend(local_interactive);
             scrollable_nodes.extend(local_scrollable);
             informative_nodes.extend(local_informative);
+            window_element_base += element_count;
         }
     }
     let uia_ms = uia_start.elapsed().as_secs_f64() * 1000.0;
@@ -1019,6 +1067,7 @@ pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String>
     }
 
     Ok(SnapshotResult {
+        generation,
         text,
         png_bytes,
         interactive_nodes,
@@ -1164,6 +1213,13 @@ mod tests {
     #[test]
     fn format_tree_line_uses_action_verb() {
         let node = state::ElementNode {
+            element_id: state::element_id(7, 3),
+            parent_id: Some(state::element_id(7, 1)),
+            generation: 7,
+            owner_handle: 0,
+            runtime_id: Vec::new(),
+            automation_id: String::new(),
+            supported_actions: vec![state::SupportedAction::Invoke],
             name: "Submit".to_string(),
             control_type: "button".to_string(),
             center: (10, 20),
@@ -1172,13 +1228,24 @@ mod tests {
         };
         assert_eq!(
             format_tree_line(&node, "click"),
-            "(10,20) button \"Submit\"  [action: click]"
+            format!(
+                "(10,20) button \"Submit\"  [id={}, parent={}, actions=invoke, action: click]",
+                state::element_id(7, 3),
+                state::element_id(7, 1)
+            )
         );
     }
 
     #[test]
     fn display_filter_clips_nodes_and_recomputes_center() {
         let node = state::ElementNode {
+            element_id: 0,
+            parent_id: None,
+            generation: 0,
+            owner_handle: 0,
+            runtime_id: Vec::new(),
+            automation_id: String::new(),
+            supported_actions: Vec::new(),
             name: "partly visible".to_string(),
             control_type: "button".to_string(),
             center: (100, 100),
