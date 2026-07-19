@@ -7,6 +7,7 @@
 pub mod app;
 pub mod click;
 pub mod clipboard;
+pub mod cursor_position;
 pub mod display_inventory;
 pub mod filesystem;
 pub mod invoke_element;

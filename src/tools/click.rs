@@ -46,9 +46,11 @@ pub struct ClickParams {
     pub label: Option<i64>,
     /// Mouse button to use. Defaults to `left`.
     pub button: Option<ClickButton>,
-    /// Number of clicks: 0 = hover only, 1 = single click, 2 = double click.
+    /// Number of clicks: 0 = hover only, 1 = single, 2 = double, 3 = triple.
     /// Defaults to 1.
     pub clicks: Option<i64>,
+    /// Optional keyboard modifier held atomically during the click.
+    pub modifier: Option<String>,
 }
 
 /// Performs `clicks` clicks with `button` at the resolved location.
@@ -56,13 +58,15 @@ pub fn click(params: ClickParams) -> Result<String, String> {
     let (x, y) = resolve_point_required(params.loc, params.label)?;
     let button = params.button.unwrap_or(ClickButton::Left);
     let clicks = params.clicks.unwrap_or(1);
-    if !(0..=2).contains(&clicks) {
-        return Err("clicks must be 0 (hover), 1 (single), or 2 (double).".to_string());
+    if !(0..=3).contains(&clicks) {
+        return Err("clicks must be 0 (hover), 1 (single), 2 (double), or 3 (triple).".to_string());
     }
+
+    let _modifier = input_sim::ModifierGuard::press(params.modifier.as_deref())?;
 
     if clicks == 0 {
         input_sim::set_cursor_pos(x, y);
-    } else if button == ClickButton::Left && clicks == 2 {
+    } else if button == ClickButton::Left && clicks >= 2 {
         let dbl_wait = Duration::from_millis((input_sim::get_double_click_time_ms() / 2) as u64);
         for i in 0..clicks {
             let wait_after = if i < clicks - 1 {
@@ -82,6 +86,7 @@ pub fn click(params: ClickParams) -> Result<String, String> {
         0 => "Hover",
         1 => "Single",
         2 => "Double",
+        3 => "Triple",
         _ => unreachable!("click count validated above"),
     };
     Ok(format!(
@@ -100,8 +105,21 @@ mod tests {
             loc: Some(ListOrString::List(vec![10, 20])),
             label: None,
             button: None,
-            clicks: Some(3),
+            clicks: Some(4),
+            modifier: None,
         });
         assert!(result.unwrap_err().contains("clicks must be"));
+    }
+
+    #[test]
+    fn rejects_unknown_modifier_before_input() {
+        let result = click(ClickParams {
+            loc: Some(ListOrString::List(vec![10, 20])),
+            label: None,
+            button: None,
+            clicks: Some(1),
+            modifier: Some("meta".to_string()),
+        });
+        assert!(result.unwrap_err().contains("modifier must be"));
     }
 }

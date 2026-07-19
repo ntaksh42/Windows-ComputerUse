@@ -67,6 +67,8 @@ pub struct ScrollParams {
     pub direction: Option<ScrollDirection>,
     /// Number of wheel notches. Defaults to 1.
     pub wheel_times: Option<i64>,
+    /// Optional keyboard modifier held atomically during scrolling.
+    pub modifier: Option<String>,
 }
 
 /// Scrolls at the resolved location (or the current cursor position) and
@@ -92,6 +94,8 @@ pub fn scroll(params: ScrollParams) -> Result<String, String> {
         return Ok(r#"Invalid direction. Use "left" or "right"."#.to_string());
     }
 
+    let modifier = input_sim::ModifierGuard::press(params.modifier.as_deref())?;
+
     if let Some((x, y)) = point {
         input_sim::move_smooth(x, y, 10.0, MOVE_WAIT);
     }
@@ -105,19 +109,33 @@ pub fn scroll(params: ScrollParams) -> Result<String, String> {
         }
         (ScrollType::Vertical, _) => unreachable!("direction validated above"),
         (ScrollType::Horizontal, ScrollDirection::Left) => {
-            input_sim::key_down(VK_SHIFT.0);
+            let shift_already_held = modifier
+                .as_ref()
+                .is_some_and(|guard| guard.virtual_key() == VK_SHIFT.0);
+            if !shift_already_held {
+                input_sim::key_down(VK_SHIFT.0);
+            }
             std::thread::sleep(SHIFT_KEY_WAIT);
             input_sim::wheel(wheel_times, NOTCH_INTERVAL, WHEEL_TRAILING_WAIT);
             std::thread::sleep(NOTCH_INTERVAL);
-            input_sim::key_up(VK_SHIFT.0);
+            if !shift_already_held {
+                input_sim::key_up(VK_SHIFT.0);
+            }
             std::thread::sleep(SHIFT_KEY_WAIT);
         }
         (ScrollType::Horizontal, ScrollDirection::Right) => {
-            input_sim::key_down(VK_SHIFT.0);
+            let shift_already_held = modifier
+                .as_ref()
+                .is_some_and(|guard| guard.virtual_key() == VK_SHIFT.0);
+            if !shift_already_held {
+                input_sim::key_down(VK_SHIFT.0);
+            }
             std::thread::sleep(SHIFT_KEY_WAIT);
             input_sim::wheel(-wheel_times, NOTCH_INTERVAL, WHEEL_TRAILING_WAIT);
             std::thread::sleep(NOTCH_INTERVAL);
-            input_sim::key_up(VK_SHIFT.0);
+            if !shift_already_held {
+                input_sim::key_up(VK_SHIFT.0);
+            }
             std::thread::sleep(SHIFT_KEY_WAIT);
         }
         (ScrollType::Horizontal, _) => unreachable!("direction validated above"),

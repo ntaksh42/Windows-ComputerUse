@@ -13,6 +13,7 @@ use rmcp::{
 use crate::tools::app::{self, AppParams};
 use crate::tools::click::{self, ClickParams};
 use crate::tools::clipboard::{self, ClipboardParams};
+use crate::tools::cursor_position::{self, CursorPositionParams};
 use crate::tools::display_inventory::{self, DisplayInventoryParams};
 use crate::tools::filesystem::{self, FileSystemParams};
 use crate::tools::invoke_element::{self, InvokeElementParams};
@@ -92,13 +93,26 @@ impl WindowsComputerUseServer {
 
     #[tool(
         name = "Click",
-        description = "Performs mouse clicks at specified coordinates [x, y] or passing a UI element's label/id. Supports button types: 'left' for selection/activation, 'right' for context menus, 'middle'. Supports clicks: 0=hover only (no click), 1=single click (select/focus), 2=double click (open/activate). Provide either loc or label."
+        description = "Performs mouse clicks at specified coordinates [x, y] or passing a UI element's label/id. Supports button types: 'left' for selection/activation, 'right' for context menus, 'middle'. Supports clicks: 0=hover only, 1=single, 2=double, 3=triple. modifier optionally holds shift/ctrl/alt/win during the click. Provide either loc or label."
     )]
     async fn click(
         &self,
         Parameters(params): Parameters<ClickParams>,
     ) -> Result<CallToolResult, McpError> {
         as_call_result(click::click(params))
+    }
+
+    #[tool(
+        name = "CursorPosition",
+        description = "Returns the current mouse cursor position in screen coordinates."
+    )]
+    async fn cursor_position(
+        &self,
+        Parameters(CursorPositionParams {}): Parameters<CursorPositionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            cursor_position::cursor_position(),
+        )]))
     }
 
     #[tool(
@@ -114,7 +128,7 @@ impl WindowsComputerUseServer {
 
     #[tool(
         name = "Scroll",
-        description = "Scrolls at coordinates [x, y], a UI element's label/id, or current mouse position if loc=None. Type: vertical (default) or horizontal. Direction: up/down for vertical, left/right for horizontal. wheel_times controls amount (1 wheel ≈ 3-5 lines). Use for navigating long content, lists, and web pages."
+        description = "Scrolls at coordinates [x, y], a UI element's label/id, or current mouse position if loc=None. Type: vertical (default) or horizontal. Direction: up/down for vertical, left/right for horizontal. modifier optionally holds shift/ctrl/alt/win during scrolling. wheel_times controls amount (1 wheel ≈ 3-5 lines)."
     )]
     async fn scroll(
         &self,
