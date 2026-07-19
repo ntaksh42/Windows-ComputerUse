@@ -11,6 +11,7 @@
 
 use std::cell::Cell;
 use std::mem::ManuallyDrop;
+use std::time::Duration;
 
 use windows::Win32::Foundation::{HWND, RECT, VARIANT_FALSE, VARIANT_TRUE};
 use windows::Win32::System::Com::{
@@ -403,17 +404,10 @@ pub fn walk_window(
     }
 }
 
-pub fn invoke_matching_element(
+fn find_matching_element(
+    automation: &IUIAutomation,
     identity: &crate::state::ElementNode,
-) -> Result<crate::state::SupportedAction, String> {
-    if identity.runtime_id.is_empty() {
-        return Err(format!(
-            "Element {} has no runtime identity",
-            identity.element_id
-        ));
-    }
-    ensure_com_initialized()?;
-    let automation = create_automation().map_err(|error| error.to_string())?;
+) -> Result<IUIAutomationElement, String> {
     let hwnd = HWND(identity.owner_handle as *mut _);
     let matches = unsafe {
         let root = automation
@@ -463,7 +457,38 @@ pub fn invoke_matching_element(
             matches.len()
         ));
     }
-    let element = &matches[0];
+    Ok(matches[0].clone())
+}
+
+pub fn invoke_matching_element(
+    identity: &crate::state::ElementNode,
+) -> Result<crate::state::SupportedAction, String> {
+    if identity.runtime_id.is_empty() {
+        return Err(format!(
+            "Element {} has no runtime identity",
+            identity.element_id
+        ));
+    }
+    ensure_com_initialized()?;
+    let automation = create_automation().map_err(|error| error.to_string())?;
+    let mut element = find_matching_element(&automation, identity)?;
+    if unsafe { element.CurrentIsOffscreen() }
+        .map_err(|error| error.to_string())?
+        .as_bool()
+    {
+        let scroll_item = unsafe {
+            element.GetCurrentPatternAs::<IUIAutomationScrollItemPattern>(UIA_ScrollItemPatternId)
+        }
+        .map_err(|_| {
+            format!(
+                "Element {} is offscreen and does not support ScrollItemPattern",
+                identity.element_id
+            )
+        })?;
+        unsafe { scroll_item.ScrollIntoView() }.map_err(|error| error.to_string())?;
+        std::thread::sleep(Duration::from_millis(100));
+        element = find_matching_element(&automation, identity)?;
+    }
     let action = crate::state::SupportedAction::highest_priority(&identity.supported_actions)
         .ok_or_else(|| {
             format!(
