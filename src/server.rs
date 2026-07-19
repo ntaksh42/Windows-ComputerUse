@@ -204,7 +204,7 @@ impl WindowsComputerUseServer {
 
     #[tool(
         name = "Snapshot",
-        description = "Captures a desktop snapshot with cursor position, display/window summaries, and (by default) the UI accessibility tree — interactive element ids/labels, scrollable regions. Use use_vision=true to also include a screenshot image; use_annotation (default true) draws numbered bounding boxes on that image for the interactive elements. Prefer Screenshot when you only need a fast visual check; use Snapshot when you need element labels for Click/Type/Scroll/Move, or scrollable-region detection. Note: when the image is downscaled, multiply image coordinates by the reported scale to get real screen coordinates."
+        description = "Captures desktop state and a structured UI accessibility map. UI tree scanning defaults to the foreground window; use window for one fuzzy title match or scope=all for whole-desktop discovery. Element lines include generation-scoped ids and supported actions for InvokeElement. use_vision=true adds an annotated screenshot. timeout_ms (default 2000, range 100-30000) bounds the total UIA scan."
     )]
     async fn snapshot(
         &self,
