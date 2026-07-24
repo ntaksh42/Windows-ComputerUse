@@ -1,0 +1,11 @@
+[
+  {
+    "label": "Debug windows-computeruse",
+    "adapter": "CodeLLDB",
+    "build": {
+      "command": "cargo",
+      "args": ["build"]
+    },
+    "sourceLanguages": ["rust"]
+  }
+]
