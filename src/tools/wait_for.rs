@@ -178,6 +178,50 @@ fn timeout_hint(condition: Condition, params: &WaitForParams) -> String {
     }
 }
 
+fn active_window_match(params: &WaitForParams, title: &str) -> Option<String> {
+    let needle = params
+        .window_name
+        .as_deref()
+        .or(params.text.as_deref())
+        .unwrap_or("");
+    casefold_contains(title, needle).then(|| format!("active window '{title}' matches '{needle}'"))
+}
+
+fn wait_for_active_window(
+    params: &WaitForParams,
+    timeout: f64,
+    interval: f64,
+) -> Result<String, String> {
+    let started = Instant::now();
+    let timeout_duration = Duration::from_secs_f64(timeout);
+    let interval_duration = Duration::from_secs_f64(interval);
+    let mut attempt: u32 = 0;
+
+    loop {
+        attempt += 1;
+        if let Some(window) = crate::window::foreground_window()
+            && let Some(detail) = active_window_match(params, &window.title)
+        {
+            let elapsed = started.elapsed().as_secs_f64();
+            return Ok(format!(
+                "WaitFor condition '{}' satisfied after {elapsed:.2}s and {attempt} attempt(s): {detail}.",
+                params.condition
+            ));
+        }
+
+        let elapsed = started.elapsed();
+        if elapsed >= timeout_duration {
+            return Err(format!(
+                "Timed out after {:.2}s waiting for '{}': {}.",
+                elapsed.as_secs_f64(),
+                params.condition,
+                timeout_hint(Condition::ActiveWindow, params)
+            ));
+        }
+        std::thread::sleep(interval_duration.min(timeout_duration - elapsed));
+    }
+}
+
 /// Executes the `WaitFor` tool: polls a Snapshot-equivalent capture (no
 /// vision, no annotation) every `interval` seconds until `condition` is
 /// satisfied or `timeout` elapses.
@@ -214,6 +258,9 @@ pub fn wait_for(params: WaitForParams) -> Result<String, String> {
         && params.text.as_deref().unwrap_or("").is_empty()
     {
         return Err("window_name or text is required for condition 'active_window'".to_string());
+    }
+    if condition == Condition::ActiveWindow {
+        return wait_for_active_window(&params, timeout, interval);
     }
 
     let snapshot_params = SnapshotParams {
@@ -253,7 +300,8 @@ pub fn wait_for(params: WaitForParams) -> Result<String, String> {
                 timeout_hint(condition, &params)
             ));
         }
-        std::thread::sleep(Duration::from_secs_f64(interval));
+        let remaining = Duration::from_secs_f64(timeout).saturating_sub(started.elapsed());
+        std::thread::sleep(Duration::from_secs_f64(interval).min(remaining));
     }
 }
 
@@ -341,5 +389,16 @@ mod tests {
                 .unwrap_err()
                 .contains("window_name or text")
         );
+    }
+
+    #[test]
+    fn active_window_matching_does_not_require_a_snapshot() {
+        let mut params = base_params("active_window");
+        params.window_name = Some("SETTINGS".to_string());
+        assert_eq!(
+            active_window_match(&params, "Windows Settings"),
+            Some("active window 'Windows Settings' matches 'SETTINGS'".to_string())
+        );
+        assert_eq!(active_window_match(&params, "File Explorer"), None);
     }
 }

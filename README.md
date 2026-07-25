@@ -50,6 +50,7 @@ keep image context and memory usage bounded.
 | `WINDOWS_MCP_ALLOW_SENSITIVE_FILES=1` | Allows FileSystem access to sensitive names such as `.env*`, `id_rsa*`, `*.pem`, `*.key`, `*.pfx`, and `credentials*`. Access is denied by default. |
 | `WINDOWS_MCP_DISABLED_TOOLS` | Comma-separated tool names to disable, matched case-insensitively. |
 | `WINDOWS_MCP_AUDIT_LOG` | JSONL audit-log path. Each call records only its timestamp, tool name, and success status. |
+| `WINDOWS_MCP_INPUT_SETTLE_MS` | Delay in milliseconds after input actions. Defaults to `50`; values are clamped to `0`–`5000`. |
 
 ## Troubleshooting
 

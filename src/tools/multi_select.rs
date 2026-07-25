@@ -11,8 +11,6 @@ use crate::input_sim::{self, MouseButton};
 use crate::params::{BoolOrString, ListOrString, opt_bool};
 use crate::tools::support::resolve_labels_checked;
 
-const CLICK_WAIT: Duration = Duration::from_millis(200);
-const BETWEEN_CLICKS_WAIT: Duration = Duration::from_millis(500);
 const CTRL_KEY_WAIT: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -58,8 +56,7 @@ pub fn multi_select(params: MultiSelectParams) -> Result<String, String> {
         std::thread::sleep(CTRL_KEY_WAIT);
     }
     for &(x, y) in &points {
-        input_sim::click_once(x, y, MouseButton::Left, CLICK_WAIT);
-        std::thread::sleep(BETWEEN_CLICKS_WAIT);
+        input_sim::click_once(x, y, MouseButton::Left, input_sim::input_settle_delay());
     }
     // Ctrl is always released, even if it was never pressed (matches the
     // Python reference's unconditional ReleaseKey call).

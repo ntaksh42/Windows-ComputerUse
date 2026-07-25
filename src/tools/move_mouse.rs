@@ -11,10 +11,7 @@ use crate::input_sim::{self, MouseButton};
 use crate::params::{BoolOrString, ListOrString, opt_bool};
 use crate::tools::support::resolve_point_required;
 
-const MOVE_WAIT: Duration = Duration::from_millis(500);
-const PRE_DRAG_WAIT: Duration = Duration::from_millis(500);
 const DRAG_START_WAIT: Duration = Duration::from_millis(50);
-const DRAG_END_WAIT: Duration = Duration::from_millis(500);
 
 struct LeftButtonGuard;
 
@@ -74,11 +71,11 @@ pub fn move_mouse(params: MoveParams) -> Result<String, String> {
     }
 
     if !drag {
-        input_sim::move_smooth(x, y, 10.0, MOVE_WAIT);
+        input_sim::set_cursor_pos(x, y);
+        std::thread::sleep(input_sim::input_settle_delay());
         return Ok(format!("Moved the mouse pointer to ({x},{y})."));
     }
 
-    std::thread::sleep(PRE_DRAG_WAIT);
     let (start_x, start_y) = from_loc.unwrap_or_else(input_sim::get_cursor_pos);
 
     input_sim::set_cursor_pos(start_x, start_y);
@@ -90,7 +87,7 @@ pub fn move_mouse(params: MoveParams) -> Result<String, String> {
         None => input_sim::move_smooth(x, y, 1.0, DRAG_START_WAIT),
     }
     drop(button_guard);
-    std::thread::sleep(DRAG_END_WAIT);
+    std::thread::sleep(input_sim::input_settle_delay());
 
     match params.duration {
         Some(duration) => Ok(format!(
