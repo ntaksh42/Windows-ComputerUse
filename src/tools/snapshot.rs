@@ -701,11 +701,16 @@ pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String>
         uia::ensure_com_initialized()?;
         let automation = uia::create_automation().map_err(|e| e.to_string())?;
         let condition = uia::build_condition(&automation).map_err(|e| e.to_string())?;
-        let dom_condition = uia::build_dom_condition(&automation).map_err(|e| e.to_string())?;
         let cache_request =
             uia::build_cache_request(&automation, &condition).map_err(|e| e.to_string())?;
-        let dom_cache_request =
-            uia::build_cache_request(&automation, &dom_condition).map_err(|e| e.to_string())?;
+        let dom_resources = if use_dom {
+            let dom_condition = uia::build_dom_condition(&automation).map_err(|e| e.to_string())?;
+            let dom_cache_request =
+                uia::build_cache_request(&automation, &dom_condition).map_err(|e| e.to_string())?;
+            Some((dom_condition, dom_cache_request))
+        } else {
+            None
+        };
 
         let ordered = select_scan_targets(&scan_options, foreground.as_ref(), &walk_windows)?;
 
@@ -717,13 +722,20 @@ pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String>
         };
         for win in ordered {
             let hwnd = HWND(win.handle as *mut _);
-            let window_condition = if use_dom && win.is_browser() {
-                &dom_condition
+            let browser_dom = use_dom && win.is_browser();
+            let window_condition = if browser_dom {
+                &dom_resources
+                    .as_ref()
+                    .expect("DOM resources are initialized when use_dom=true")
+                    .0
             } else {
                 &condition
             };
-            let window_cache_request = if use_dom && win.is_browser() {
-                &dom_cache_request
+            let window_cache_request = if browser_dom {
+                &dom_resources
+                    .as_ref()
+                    .expect("DOM resources are initialized when use_dom=true")
+                    .1
             } else {
                 &cache_request
             };
@@ -732,7 +744,7 @@ pub(crate) fn capture(params: &SnapshotParams) -> Result<SnapshotResult, String>
                 window_cache_request,
                 window_condition,
                 hwnd,
-                !(use_dom && win.is_browser()),
+                !browser_dom,
                 deadline,
                 max_retries,
             ) {

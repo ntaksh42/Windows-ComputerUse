@@ -29,6 +29,18 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 /// WHEEL_DELTA from winuser.h: one "notch" of mouse wheel rotation.
 const WHEEL_DELTA: i32 = 120;
+const DEFAULT_INPUT_SETTLE_MS: u64 = 50;
+const MAX_INPUT_SETTLE_MS: u64 = 5_000;
+
+/// Delay after a completed input action, configurable for slower applications.
+pub(crate) fn input_settle_delay() -> Duration {
+    let millis = std::env::var("WINDOWS_MCP_INPUT_SETTLE_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_INPUT_SETTLE_MS)
+        .clamp(0, MAX_INPUT_SETTLE_MS);
+    Duration::from_millis(millis)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseButton {
@@ -413,4 +425,35 @@ unsafe fn wcslen(mut ptr: *const u16) -> usize {
         }
     }
     len
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn input_settle_delay_defaults_to_fifty_milliseconds() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var("WINDOWS_MCP_INPUT_SETTLE_MS") };
+        assert_eq!(input_settle_delay(), Duration::from_millis(50));
+    }
+
+    #[test]
+    fn input_settle_delay_uses_environment_override_and_clamps_it() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        unsafe { std::env::set_var("WINDOWS_MCP_INPUT_SETTLE_MS", "125") };
+        assert_eq!(input_settle_delay(), Duration::from_millis(125));
+
+        unsafe { std::env::set_var("WINDOWS_MCP_INPUT_SETTLE_MS", "6000") };
+        assert_eq!(input_settle_delay(), Duration::from_millis(5000));
+
+        unsafe { std::env::set_var("WINDOWS_MCP_INPUT_SETTLE_MS", "invalid") };
+        assert_eq!(input_settle_delay(), Duration::from_millis(50));
+
+        unsafe { std::env::remove_var("WINDOWS_MCP_INPUT_SETTLE_MS") };
+    }
 }

@@ -20,9 +20,7 @@ use crate::tools::support::resolve_point_required;
 /// keyboard event queue, which can drop keystrokes under load for long text.
 const LONG_TEXT_PASTE_THRESHOLD: usize = 20;
 
-const CLICK_FOCUS_WAIT: Duration = Duration::from_millis(500);
 const KEY_WAIT: Duration = Duration::from_millis(50);
-const CLEAR_PRE_WAIT: Duration = Duration::from_millis(500);
 const TYPE_INTERVAL: Duration = Duration::from_millis(40);
 const PASTE_SETTLE_WAIT: Duration = Duration::from_millis(50);
 
@@ -75,7 +73,7 @@ pub fn type_at(
     clear: bool,
     press_enter: bool,
 ) {
-    input_sim::click_once(x, y, MouseButton::Left, CLICK_FOCUS_WAIT);
+    input_sim::click_once(x, y, MouseButton::Left, input_sim::input_settle_delay());
 
     match caret_position {
         CaretPosition::Start => input_sim::key_tap(VK_HOME.0, KEY_WAIT),
@@ -84,7 +82,6 @@ pub fn type_at(
     }
 
     if clear {
-        std::thread::sleep(CLEAR_PRE_WAIT);
         input_sim::chord(&[VK_CONTROL.0, b'A' as u16], KEY_WAIT);
         input_sim::key_tap(VK_BACK.0, KEY_WAIT);
     }

@@ -160,7 +160,7 @@ SelectionItem.Select、Toggle、ExpandCollapse の順で利用可能なUIAパタ
 全一致を再解決に使用する。古いID、閉じたウィンドウ、複数一致はエラー。
 座標クリックは明示指定時だけ許可し、保存された中心が現在の所有ウィンドウと
 要素bounds内にあることを検証する。
-Rust では SendInput（MOUSEEVENTF_ABSOLUTE は仮想スクリーン基準に正規化）。double click は GetDoubleClickTime()/2 の間隔。click 間 sleep 0.05s、後 0.5s。
+Rust では SendInput（MOUSEEVENTF_ABSOLUTE は仮想スクリーン基準に正規化）。double click は GetDoubleClickTime()/2 の間隔。click 間 sleep 0.05s、操作後は既定 0.05s（`WINDOWS_MCP_INPUT_SETTLE_MS` で変更可能）。
 
 ## 9. Type
 
@@ -196,7 +196,7 @@ WHEEL_DELTA=120 単位、notch 間 0.05s。horizontal は Shift 押下 + 縦ホ�
 | from_loc | [x,y]? | null（drag=true 時のみ。省略時は現カーソル位置から） |
 | duration | float? | null（0–10 秒。drag=true 時のみ） |
 
-- move: スムーズ移動（ステップ分割 SetCursorPos）。応答 `"Moved the mouse pointer to ({x},{y})."`
+- move: SetCursorPos で即時移動。応答 `"Moved the mouse pointer to ({x},{y})."`
 - drag: mouse-down → 移動（duration 指定時は 0.01s 刻み最大 200 ステップ線形補間）→ mouse-up。例外時も mouse-up を保証。応答 `"Dragged from ({sx},{sy}) to ({x},{y})[ over {d:.3f} seconds]."`
 - from_loc/duration を drag=false で渡すと ValueError。
 
@@ -241,7 +241,7 @@ param: duration: int 秒。sleep。応答 `"Waited for {duration} seconds."`
 ## 16. MultiSelect
 
 locs: [[x,y],...] / labels: [int,...]（併用可、少なくとも一方）、press_ctrl: bool=true。
-Ctrl 押しっぱなし → 各座標クリック (0.2s wait + 0.5s sleep) → Ctrl 解放（無条件）。
+Ctrl 押しっぱなし → 各座標クリック（操作後は `WINDOWS_MCP_INPUT_SETTLE_MS`、既定 0.05s）→ Ctrl 解放（無条件）。
 応答 `"Multi-selected elements at:\n(x,y)\n(x,y)..."`
 
 ## 17. MultiEdit

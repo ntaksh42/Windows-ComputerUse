@@ -1,15 +1,11 @@
 //! `Shortcut` tool: presses a `+`-separated key combination as a
 //! simultaneous chord (e.g. `"ctrl+shift+esc"`).
 
-use std::time::Duration;
-
 use rmcp::schemars;
 use serde::Deserialize;
 
 use crate::input_sim;
 use crate::keys;
-
-const AFTER_SHORTCUT_WAIT: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ShortcutParams {
@@ -30,6 +26,6 @@ pub fn shortcut(params: ShortcutParams) -> Result<String, String> {
         return Err("shortcut must not be empty".to_string());
     }
 
-    input_sim::chord(&vks, AFTER_SHORTCUT_WAIT);
+    input_sim::chord(&vks, input_sim::input_settle_delay());
     Ok(format!("Pressed {}.", params.shortcut))
 }

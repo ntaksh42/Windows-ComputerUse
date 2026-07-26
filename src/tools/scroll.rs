@@ -12,9 +12,7 @@ use crate::params::ListOrString;
 use crate::tools::support::resolve_point_optional;
 
 const NOTCH_INTERVAL: Duration = Duration::from_millis(50);
-const WHEEL_TRAILING_WAIT: Duration = Duration::from_millis(500);
 const SHIFT_KEY_WAIT: Duration = Duration::from_millis(50);
-const MOVE_WAIT: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Deserialize, schemars::JsonSchema, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -98,15 +96,20 @@ pub fn scroll(params: ScrollParams) -> Result<String, String> {
     let modifier = input_sim::ModifierGuard::press(params.modifier.as_deref())?;
 
     if let Some((x, y)) = point {
-        input_sim::move_smooth(x, y, 10.0, MOVE_WAIT);
+        input_sim::set_cursor_pos(x, y);
+        std::thread::sleep(input_sim::input_settle_delay());
     }
 
     match (scroll_type, direction) {
         (ScrollType::Vertical, ScrollDirection::Up) => {
-            input_sim::wheel(wheel_times, NOTCH_INTERVAL, WHEEL_TRAILING_WAIT);
+            input_sim::wheel(wheel_times, NOTCH_INTERVAL, input_sim::input_settle_delay());
         }
         (ScrollType::Vertical, ScrollDirection::Down) => {
-            input_sim::wheel(-wheel_times, NOTCH_INTERVAL, WHEEL_TRAILING_WAIT);
+            input_sim::wheel(
+                -wheel_times,
+                NOTCH_INTERVAL,
+                input_sim::input_settle_delay(),
+            );
         }
         (ScrollType::Vertical, _) => unreachable!("direction validated above"),
         (ScrollType::Horizontal, ScrollDirection::Left) => {
@@ -117,7 +120,7 @@ pub fn scroll(params: ScrollParams) -> Result<String, String> {
                 input_sim::key_down(VK_SHIFT.0);
             }
             std::thread::sleep(SHIFT_KEY_WAIT);
-            input_sim::wheel(wheel_times, NOTCH_INTERVAL, WHEEL_TRAILING_WAIT);
+            input_sim::wheel(wheel_times, NOTCH_INTERVAL, input_sim::input_settle_delay());
             std::thread::sleep(NOTCH_INTERVAL);
             if !shift_already_held {
                 input_sim::key_up(VK_SHIFT.0);
@@ -132,7 +135,11 @@ pub fn scroll(params: ScrollParams) -> Result<String, String> {
                 input_sim::key_down(VK_SHIFT.0);
             }
             std::thread::sleep(SHIFT_KEY_WAIT);
-            input_sim::wheel(-wheel_times, NOTCH_INTERVAL, WHEEL_TRAILING_WAIT);
+            input_sim::wheel(
+                -wheel_times,
+                NOTCH_INTERVAL,
+                input_sim::input_settle_delay(),
+            );
             std::thread::sleep(NOTCH_INTERVAL);
             if !shift_already_held {
                 input_sim::key_up(VK_SHIFT.0);

@@ -1,15 +1,11 @@
 //! `Click` tool: mouse clicks at coordinates or a UI element label.
 
-use std::time::Duration;
-
 use rmcp::schemars;
 use serde::Deserialize;
 
 use crate::input_sim::{self, MouseButton};
 use crate::params::ListOrString;
 use crate::tools::support::resolve_point_required;
-
-const AFTER_CLICK_WAIT: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Deserialize, schemars::JsonSchema, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -67,18 +63,24 @@ pub fn click(params: ClickParams) -> Result<String, String> {
     if clicks == 0 {
         input_sim::set_cursor_pos(x, y);
     } else if button == ClickButton::Left && clicks >= 2 {
-        let dbl_wait = Duration::from_millis((input_sim::get_double_click_time_ms() / 2) as u64);
+        let dbl_wait =
+            std::time::Duration::from_millis((input_sim::get_double_click_time_ms() / 2) as u64);
         for i in 0..clicks {
             let wait_after = if i < clicks - 1 {
                 dbl_wait
             } else {
-                AFTER_CLICK_WAIT
+                input_sim::input_settle_delay()
             };
             input_sim::click_once(x, y, button.as_mouse_button(), wait_after);
         }
     } else {
         for _ in 0..clicks {
-            input_sim::click_once(x, y, button.as_mouse_button(), AFTER_CLICK_WAIT);
+            input_sim::click_once(
+                x,
+                y,
+                button.as_mouse_button(),
+                input_sim::input_settle_delay(),
+            );
         }
     }
 
